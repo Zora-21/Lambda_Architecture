@@ -1,0 +1,7 @@
+#/Users/matteo/Documents/Lambda_IoT/iot-producer/requirements.txt
+
+cassandra-driver
+hdfs
+requests
+websocket-client
+kafka-python

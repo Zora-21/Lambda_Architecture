@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="it">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Avanzata - Analisi Crypto</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* --- STILI BASE --- */
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            min-height: 115vh;
+            overflow-x: hidden;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 550px 1fr;
+            gap: 25px;
+            max-width: 1850px;
+            margin: 0 auto;
+            margin-top: calc(22vh + 20px);
+            padding-bottom: 0px;
+        }
+
+        .left-column {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transition: opacity 0.3s ease;
+        }
+
+        .chart-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            position: relative;
+            width: 100%;
+            min-width: 0;
+        }
+
+        .card {
+            background-color: #1e1e1e;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #333;
+            transition: all 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .left-column .card {
+            padding: 16px 20px;
+        }
+
+        .left-column .card h2 {
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+            font-size: 1.05em;
+        }
+
+        .card:hover {
+            transform: scale(1.01);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        .card h2 {
+            border-bottom: 1px solid #444;
+            padding-bottom: 12px;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 1.15em;
+            font-weight: 700;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .chart-container {
+            flex-grow: 1;
+            position: relative;
+            width: 100%;
+        }
+
+        #header-card {
+            padding: 26px 20px;
+            text-align: center;
+            transition: all 0.5s ease;
+        }
+
+        #header-card h2 {
+            border-bottom: none;
+            margin-bottom: 0;
+            justify-content: center;
+            font-size: 1.8em;
+        }
+
+        #sensor-select {
+            font-size: 0.9em;
+            padding: 6px 12px;
+            border-radius: 6px;
+            background-color: #333;
+            color: #e0e0e0;
+            border: 1px solid #555;
+            cursor: pointer;
+            outline: none;
+        }
+
+        #sensor-select:hover {
+            border-color: #777;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 10px;
+        }
+
+        .metric-box {
+            background: #2a2a2a;
+            padding: 16px;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+        }
+
+        .metric-box.positive {
+            border-left-color: #28a745;
+        }
+
+        .metric-box.negative {
+            border-left-color: #dc3545;
+        }
+
+        .metric-box.danger {
+            border-left-color: #dc3545;
+        }
+
+        .metric-label {
+            font-size: 0.9em;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            font-size: 1.4em;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .metric-value.positive {
+            color: #28a745;
+        }
+
+        .metric-value.negative {
+            color: #dc3545;
+        }
+
+        #status-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-badge {
+            font-size: 0.9em;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 12px;
+            color: white;
+            text-transform: uppercase;
+        }
+
+        .status-online {
+            background-color: #28a745;
+        }
+
+        .status-offline,
+        .status-error {
+            background-color: #dc3545;
+        }
+
+        .status-no_data {
+            background-color: #6c757d;
+        }
+
+        #status-temp {
+            font-size: 1.2em;
+            font-weight: 500;
+            margin-left: 10px;
+        }
+
+        /* --- HERO MODE CSS --- */
+        #trend-placeholder {
+            display: none;
+            height: 380px;
+        }
+
+        body.hero-mode #hero-chart-card {
+            position: fixed;
+            top: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 95%;
+            max-width: 1850px;
+            height: 80vh;
+            z-index: 999;
+            border-color: #007bff;
+            box-shadow: 0 40px 90px rgba(0, 0, 0, 0.95);
+        }
+
+        body.hero-mode #hero-chart-card .chart-container {
+            height: 100% !important;
+            min-height: unset !important;
+        }
+
+        body.hero-mode .left-column,
+        body.hero-mode .card:not(#hero-chart-card):not(#header-card),
+        body.hero-mode #trend-placeholder {
+            opacity: 0.05;
+            filter: blur(5px);
+            pointer-events: none;
+        }
+
+        body.hero-mode #trend-placeholder {
+            display: block;
+        }
+
+        body.hero-mode #header-card {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 1800px;
+            z-index: 1000;
+            border-color: #007bff;
+        }
+
+        body:not(.hero-mode) #hero-chart-card .chart-container {
+            height: 290px !important;
+            min-height: 290px !important;
+            max-height: 290px !important;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+</head>
+
+<body class="hero-mode">
+    <div id="scroll-hint"
+        style="position: fixed; bottom: 20px; width: 100%; text-align: center; color: #aaa; animation: bounce 2s infinite; z-index: 2000;">
+        Scrolla per Dashboard Normale ↓</div>
+    <div class="container">
+        <div class="left-column">
+            <div class="card" id="header-card">
+                <h2>Crypto Analysis Dashboard</h2>
+            </div>
+            <div class="card">
+                <h2><span>📈 Real-Time Status</span><select id="sensor-select">
+                        <option value="A1" selected>BTC/USDT</option>
+                        <option value="B1">ETH/USDT</option>
+                        <option value="C1">SOL/USDT</option>
+                    </select></h2>
+                <div id="sensor-status">
+                    <p id="status-label">Status: <span id="status-badge-text">In attesa...</span></p>
+                    <p id="status-temp">Price: N/A</p>
+                </div>
+            </div>
+            <div class="card">
+                <h2>🗓️ Daily Metrics</h2>
+                <div id="daily-metrics">
+                    <p style="text-align: center; color: #888;">Caricamento...</p>
+                </div>
+            </div>
+            <div class="card">
+                <h2>⚙️ Data Processing Stats</h2>
+                <div id="data-stats">
+                    <div class="metrics-grid">
+                        <div class="metric-box positive">
+                            <div class="metric-label">Clean Data</div>
+                            <div class="metric-value" id="total-clean">0</div>
+                        </div>
+                        <div class="metric-box danger">
+                            <div class="metric-label">Discarded</div>
+                            <div class="metric-value" id="total-discarded">0</div>
+                        </div>
+                    </div>
+                    <div style="text-align: center; margin-top: 15px; color: #aaa; font-size: 0.9em;">Processed Today:
+                        <span id="total-processed" style="font-weight: bold;">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="chart-stack">
+            <div id="trend-placeholder"></div>
+            <div class="card" id="hero-chart-card">
+                <h2>📉 Real-Time Trend</h2>
+                <div class="chart-container" style="min-height:300px;"><canvas id="realtimeLineChart"></canvas></div>
+            </div>
+            <div class="card">
+                <h2>💾 Memory Usage (RAM)</h2>
+                <div class="chart-container" style="min-height: 245px;"><canvas id="memoryChart"></canvas></div>
+            </div>
+            <div class="card">
+                <h2>🌐 Network Traffic (I/O)</h2>
+                <div class="chart-container" style="min-height: 245px;"><canvas id="networkChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const scrollThreshold = 100; const body = document.body;
+        window.addEventListener('scroll', () => {
+            const isHero = body.classList.contains('hero-mode');
+            if (window.scrollY > scrollThreshold && isHero) { body.classList.remove('hero-mode'); document.getElementById('scroll-hint').style.opacity = '0'; if (realtimeLineChartInstance) realtimeLineChartInstance.resize(); }
+            else if (window.scrollY <= scrollThreshold && !isHero) { body.classList.add('hero-mode'); document.getElementById('scroll-hint').style.opacity = '1'; if (realtimeLineChartInstance) realtimeLineChartInstance.resize(); }
+        });
+
+        let realtimeLineChartInstance, memoryChartInstance, networkChartInstance;
+        // Variabile per memorizzare l'inizio della "sessione" di dati (primo dato assoluto)
+        let trendAxisStart = null;
+        let currentDailyAvg = null; // Variabile globale per la media giornaliera
+        const SENSOR_DETAILS = { 'A1': { name: 'BTC/USDT', color: 'rgba(242, 169, 0, 1)' }, 'B1': { name: 'ETH/USDT', color: 'rgba(98, 126, 234, 1)' }, 'C1': { name: 'SOL/USDT', color: 'rgba(153, 69, 255, 1)' } };
+
+        function setupChartDefaults() { Chart.defaults.color = '#e0e0e0'; Chart.defaults.borderColor = 'rgba(255, 255, 255, 0.1)'; }
+
+        function initializeRealtimeLineChart() {
+            const ctx = document.getElementById('realtimeLineChart').getContext('2d');
+
+            // Inizializziamo il grafico vuoto. L'asse verrà fissato al primo dato ricevuto.
+            realtimeLineChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        { label: 'Price (USD)', data: [], borderColor: 'rgba(0, 123, 255, 1)', tension: 0.1, pointRadius: 0, fill: true, borderWidth: 2, backgroundColor: 'rgba(0, 123, 255, 0.1)' },
+                        { label: 'Daily Avg', data: [], borderColor: 'rgba(255, 99, 132, 0.8)', borderDash: [5, 5], pointRadius: 0, borderWidth: 1, fill: false }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        y: { title: { display: true, text: 'Price (USD)' }, beginAtZero: false },
+                        x: {
+                            type: 'time',
+                            time: { unit: 'hour', displayFormats: { hour: 'HH:mm' }, tooltipFormat: 'HH:mm:ss' },
+                            title: { display: true, text: 'Time' }
+                        }
+                    },
+                    animation: { duration: 0 }
+                }
+            });
+        }
+
+        function createBarChart(id) { return new Chart(document.getElementById(id).getContext('2d'), { type: 'bar', data: { labels: [], datasets: [] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true, stacked: true }, y: { stacked: true } } } }); }
+        function initializePerformanceCharts() { memoryChartInstance = createBarChart('memoryChart'); memoryChartInstance.data.datasets = [{ label: 'Used', data: [], backgroundColor: 'rgba(0, 123, 255, 0.8)' }]; networkChartInstance = createBarChart('networkChart'); networkChartInstance.data.datasets = [{ label: 'Rx', data: [], backgroundColor: 'rgba(40, 167, 69, 0.8)' }, { label: 'Tx', data: [], backgroundColor: 'rgba(255, 193, 7, 0.8)' }]; }
+
+        async function updateRealtimeData(sensorId) {
+            const conf = SENSOR_DETAILS[sensorId];
+            try {
+                const res = await fetch(`/data/realtime?sensor_id=${sensorId}`); const data = await res.json();
+                if (data.status) {
+                    const badge = document.getElementById('status-badge-text'); badge.textContent = data.status;
+                    badge.className = "status-badge " + (data.status === "ONLINE" ? "status-online" : data.status === "NO_DATA" ? "status-no_data" : "status-error");
+                    let val = (data.temp !== 'N/A' && data.temp !== undefined) ? '$' + parseFloat(data.temp).toLocaleString() : 'N/A';
+                    document.getElementById('status-temp').textContent = `Price: ${val}`;
+                }
+            } catch (e) { }
+
+            try {
+                const res = await fetch(`/data/realtime/trend?sensor_id=${sensorId}`); const data = await res.json();
+
+                if (realtimeLineChartInstance) {
+                    // Aggiorna sempre la label e i colori
+                    realtimeLineChartInstance.data.datasets[0].label = `Price (${conf.name})`;
+                    realtimeLineChartInstance.data.datasets[0].borderColor = conf.color;
+                    realtimeLineChartInstance.data.datasets[0].backgroundColor = conf.color.replace('1)', '0.1)');
+
+                    if (data.data.length > 0) {
+                        realtimeLineChartInstance.data.datasets[0].data = data.data;
+
+                        // --- LOGICA PERSISTENZA ASSE X (START + 12H) ---
+                        // Prendiamo il timestamp del PRIMISSIMO dato presente nel database (indice 0)
+                        const firstDataPointTime = new Date(data.data[0].x).getTime();
+
+                        // Se l'asse non è stato ancora fissato, o se è cambiato drasticamente (es. cambio coin), lo impostiamo.
+                        // Una volta fissato, NON LO CAMBIAMO PIÙ durante questa sessione.
+                        // Questo garantisce che al refresh della pagina, l'asse si ricalcoli basandosi sempre sul primo dato storico.
+                        if (!trendAxisStart || Math.abs(trendAxisStart - firstDataPointTime) > 60000) {
+                            trendAxisStart = firstDataPointTime;
+                            realtimeLineChartInstance.options.scales.x.min = trendAxisStart;
+
+                            // LOGICA DINAMICA: Minimo 12 ore, ma si espande se i dati superano le 12 ore
+                            const twelveHours = 12 * 60 * 60 * 1000;
+                            const lastDataPointTime = new Date(data.data[data.data.length - 1].x).getTime();
+                            realtimeLineChartInstance.options.scales.x.max = Math.max(trendAxisStart + twelveHours, lastDataPointTime);
+                        } else {
+                            // Anche se l'asse è già fissato, controlliamo se dobbiamo espanderlo per nuovi dati
+                            const twelveHours = 12 * 60 * 60 * 1000;
+                            const lastDataPointTime = new Date(data.data[data.data.length - 1].x).getTime();
+                            if (lastDataPointTime > trendAxisStart + twelveHours) {
+                                realtimeLineChartInstance.options.scales.x.max = lastDataPointTime;
+                            }
+                        }
+
+                        // --- AGGIORNAMENTO LINEA MEDIA GIORNALIERA ---
+                        if (currentDailyAvg !== null) {
+                            // Crea una linea orizzontale che copre tutto il range dei dati attuali
+                            // Usiamo il primo e l'ultimo timestamp dei dati per disegnare la linea
+                            const startX = data.data[0].x;
+                            const endX = data.data[data.data.length - 1].x;
+                            realtimeLineChartInstance.data.datasets[1].data = [
+                                { x: startX, y: currentDailyAvg },
+                                { x: endX, y: currentDailyAvg }
+                            ];
+                        } else {
+                            realtimeLineChartInstance.data.datasets[1].data = [];
+                        }
+
+                    } else {
+                        // Se non ci sono dati, pulisci il grafico
+                        realtimeLineChartInstance.data.datasets[0].data = [];
+                        realtimeLineChartInstance.data.datasets[1].data = [];
+                    }
+
+                    realtimeLineChartInstance.update('none');
+                }
+            } catch (e) { }
+        }
+
+        async function updateBatchData(sensorId) {
+            const cont = document.getElementById('daily-metrics');
+            try {
+                const res = await fetch(`/data/batch?sensor_id=${sensorId}`);
+                const data = await res.json();
+                if (data.status) {
+                    cont.innerHTML = `<p style="text-align: center; color: #888;">${data.status}</p>`;
+                    currentDailyAvg = null; // Reset se non ci sono dati
+                    return;
+                }
+                const d = Object.keys(data)[0];
+                const m = data[d];
+
+                // Aggiorna la media globale
+                currentDailyAvg = m.mean;
+
+                // Helper per arrotondare
+                const round = (v, d=2) => v != null ? Number(v).toFixed(d) : 'N/A';
+
+                const cls = m.daily_change >= 0 ? 'positive' : 'negative';
+                const rsiVal = m.avg_rsi || m.rsi;
+                const rsiCls = rsiVal > 70 ? 'positive' : (rsiVal < 30 ? 'negative' : '');
+                const momVal = m.avg_momentum || m.momentum || 0;
+                const momCls = momVal >= 0 ? 'positive' : 'negative';
+                cont.innerHTML = `<div style="text-align: center; margin-bottom: 15px; color: #aaa; font-size: 0.9em;">
+                                Data: ${d}</div><div class="metrics-grid">
+                                    <div class="metric-box"><div class="metric-label">Min</div><div class="metric-value">$${round(m.min, 2)}</div></div>
+                                    <div class="metric-box"><div class="metric-label">Max</div><div class="metric-value">$${round(m.max, 2)}</div></div>
+                                    <div class="metric-box"><div class="metric-label">Avg Price</div><div class="metric-value">$${round(m.mean, 2)}</div></div>
+                                    <div class="metric-box ${rsiCls}"><div class="metric-label">RSI</div><div class="metric-value ${rsiCls}">${round(rsiVal, 1)}</div></div>
+                                    <div class="metric-box"><div class="metric-label">Boll. Lower</div><div class="metric-value">$${round(m.bollinger_lower, 2)}</div></div>
+                                    <div class="metric-box"><div class="metric-label">Boll. Upper</div><div class="metric-value">$${round(m.bollinger_upper, 2)}</div></div>
+                                    <div class="metric-box ${cls}"><div class="metric-label">Change</div><div class="metric-value ${cls}">${m.daily_change >= 0 ? '+' : ''}${round(m.daily_change_pct, 3)}%</div></div>
+                                    <div class="metric-box"><div class="metric-label">Volatility</div><div class="metric-value">${round(m.volatility, 2)}</div></div>
+                                    <div class="metric-box ${momCls}"><div class="metric-label">Momentum</div><div class="metric-value ${momCls}">${momVal >= 0 ? '+' : ''}${round(momVal * 100, 3)}%</div></div>
+                                    <div class="metric-box"><div class="metric-label">Clean Count</div><div class="metric-value">${(m.count || 0).toLocaleString()}</div></div></div>`;
+            } catch (e) {
+                currentDailyAvg = null;
+            }
+        }
+
+        async function updateDataStats() { 
+            try { 
+                const r_agg = await fetch('/data/aggregate_stats'); 
+                const d_agg = await r_agg.json(); 
+                document.getElementById('total-clean').textContent = (d_agg.total_clean || 0).toLocaleString(); 
+                document.getElementById('total-discarded').textContent = (d_agg.total_discarded || 0).toLocaleString(); 
+                document.getElementById('total-processed').textContent = (d_agg.total_processed || 0).toLocaleString(); 
+            } catch (e) { } 
+        }
+        async function updatePerf() { try { const r = await fetch('/data/performance'); const d = await r.json(); const l = Object.keys(d).sort(); if (memoryChartInstance) { memoryChartInstance.data.labels = l; memoryChartInstance.data.datasets[0].data = l.map(k => d[k].mem_mb); memoryChartInstance.update('none'); } if (networkChartInstance) { networkChartInstance.data.labels = l; networkChartInstance.data.datasets[0].data = l.map(k => d[k].net_rx_mb); networkChartInstance.data.datasets[1].data = l.map(k => d[k].net_tx_mb); networkChartInstance.update('none'); } } catch (e) { } }
+
+        function updateAll() {
+            trendAxisStart = null; // Reset asse se cambio coin
+            const s = document.getElementById('sensor-select').value;
+            updateRealtimeData(s); updateBatchData(s); updateDataStats(); updatePerf();
+        }
+        window.onload = () => {
+            setupChartDefaults();
+            initializeRealtimeLineChart();
+            initializePerformanceCharts();
+            updateAll();
+
+            // Loop Veloce (2s): Dati Real-time e Stats Aggregati
+            setInterval(() => {
+                const s = document.getElementById('sensor-select').value;
+                updateRealtimeData(s);
+                updateDataStats();
+            }, 2000);
+
+            // Loop Lento (10s): Performance (Docker Stats)
+            setInterval(() => {
+                updatePerf();
+            }, 10000);
+
+            // Loop Molto Lento (60s): Dati Batch
+            setInterval(() => {
+                const s = document.getElementById('sensor-select').value;
+                updateBatchData(s);
+            }, 60000);
+
+            document.getElementById('sensor-select').onchange = () => {
+                currentDailyAvg = null; // Reset media al cambio sensore
+                updateAll();
+            };
+            const styleSheet = document.createElement("style");
+            styleSheet.innerText = `@keyframes bounce { 0%, 20%, 50%, 80%, 100% {transform: translateY(0);} 40% {transform: translateY(-10px);} 60% {transform: translateY(-5px);} }`;
+            document.head.appendChild(styleSheet);
+        };
+    </script>
+</body>
+
+</html>

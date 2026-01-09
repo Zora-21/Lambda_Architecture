@@ -1,0 +1,11 @@
+performance_data/
+analyze_batch_resources.py
+analyze_resources.py
+clean_batch_data.py
+collect_layer_metrics.py
+debug_hdfs.py
+generate_batch_report.py
+generate_latency_report.py
+generate_system_report.py
+latency_report.png
+speed_report.py
