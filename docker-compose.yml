@@ -218,8 +218,8 @@ services:
       - KAFKA_TOPIC=crypto-prices
       - KAFKA_BATCH_GROUP_ID=batch-layer-group
       - HDFS_HOST=namenode
-      - BATCH_SIZE=500
-      - BATCH_FLUSH_INTERVAL=60
+      - BATCH_SIZE=1000
+      - BATCH_FLUSH_INTERVAL=120
     depends_on:
       kafka:
         condition: service_healthy

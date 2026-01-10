@@ -28,7 +28,7 @@ JOBS_DIR = '/opt/spark/jobs'
 MODEL_PATH = '/models/model.json'
 CALIBRATION_WAIT = 300  # 5 minuti
 MODEL_TRAINER_INTERVAL = 300  # 5 minuti
-BATCH_PROCESSOR_INTERVAL = 120  # 2 minuti
+BATCH_PROCESSOR_INTERVAL = 150  # 2.5 minuti
 
 last_model_run = 0
 last_batch_run = 0

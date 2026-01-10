@@ -15,6 +15,7 @@ from pyspark.sql.window import Window
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 import json
 import requests
+import time
 from datetime import datetime
 
 # Configuration
@@ -36,6 +37,31 @@ def load_model(spark):
     except Exception as e:
         print(f"Could not load model: {e}")
     return {}
+
+
+def get_model_age(spark):
+    """
+    Returns the age of the model file in seconds.
+    Returns -1 if model does not exist or error.
+    """
+    try:
+        sc = spark.sparkContext
+        fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+            spark._jvm.java.net.URI(HDFS_NAMENODE),
+            sc._jsc.hadoopConfiguration()
+        )
+        path = spark._jvm.org.apache.hadoop.fs.Path(MODEL_PATH)
+        
+        if fs.exists(path):
+            status = fs.getFileStatus(path)
+            mod_time = status.getModificationTime() # ms
+            current_time = time.time() * 1000 # ms
+            age_sec = (current_time - mod_time) / 1000.0
+            return age_sec
+    except Exception as e:
+        print(f"Error checking model age: {e}")
+        
+    return -1
 
 
 def main():
@@ -211,21 +237,32 @@ def main():
         print(f"Error archiving data: {e}")
     
     # --- Write aggregate stats (like old project's aggregate_stats.py) ---
-    aggregate_stats = {
-        "total_clean": clean_count,
-        "total_discarded": discarded_count,
-        "total_processed": total_count
-    }
     
-    stats_path = f"{AGGREGATE_STATS_PATH}/date={today}"
-    try:
-        # Create a DataFrame with a single row and write as JSON
-        stats_df = spark.createDataFrame([aggregate_stats])
-        stats_df.coalesce(1).write.mode("overwrite").json(stats_path)
-        print(f"Aggregate stats saved to: {stats_path}")
-        print(f"  -> Total: {total_count}, Clean: {clean_count}, Discarded: {discarded_count}")
-    except Exception as e:
-        print(f"Error saving aggregate stats: {e}")
+    # Check if this is a calibration run (Model < 2 minutes old)
+    model_age = get_model_age(spark)
+    is_calibration_run = 0 <= model_age < 120
+    
+    if is_calibration_run:
+        print("\n" + "!" * 60)
+        print(f"SKIPPING STATS: Model is brand new ({model_age:.1f}s old).")
+        print("This is likely a Calibration Run. Data archived but not counted in daily stats.")
+        print("!" * 60 + "\n")
+    else:
+        aggregate_stats = {
+            "total_clean": clean_count,
+            "total_discarded": discarded_count,
+            "total_processed": total_count
+        }
+        
+        stats_path = f"{AGGREGATE_STATS_PATH}/date={today}"
+        try:
+            # Create a DataFrame with a single row and write as JSON
+            stats_df = spark.createDataFrame([aggregate_stats])
+            stats_df.coalesce(1).write.mode("overwrite").json(stats_path)
+            print(f"Aggregate stats saved to: {stats_path}")
+            print(f"  -> Total: {total_count}, Clean: {clean_count}, Discarded: {discarded_count}")
+        except Exception as e:
+            print(f"Error saving aggregate stats: {e}")
     
     print("\n" + "=" * 60)
     print("Batch Processing Complete!")
