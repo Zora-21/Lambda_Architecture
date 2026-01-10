@@ -22,7 +22,7 @@ HDFS_USER = os.environ.get('HDFS_USER', 'root')
 
 # Percorsi - Updated for Spark output
 HDFS_DAILY_OUTPUT = '/iot-output/spark'
-HDFS_STATS_DIR = '/iot-output/spark'
+HDFS_STATS_DIR = '/iot-stats/daily-aggregate'  # Batch layer aggregate stats
 HDFS_DISCARD_STATS_PATH = '/models/discard_stats.json'
 HDFS_SUMMARY_DIR = '/iot-output/spark'
 
@@ -140,35 +140,28 @@ def get_batch_data():
 
 @app.route('/data/aggregate_stats')
 def get_aggregate_stats():
+    """Read aggregate stats from batch layer HDFS output (like old project)."""
     client = get_hdfs_client()
     response = {"total_clean": 0, "total_processed": 0, "total_discarded": 0}
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    stats_path = f"{HDFS_STATS_DIR}/date={today}"
     
-    # Get clean count from Cassandra (cumulative, accurate)
     try:
-        init_cassandra()
-        if cassandra_session:
-            # Count records per sensor for today
-            today_midnight = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            for sensor_id in ['A1', 'B1', 'C1']:
-                query = "SELECT COUNT(*) FROM sensor_data WHERE sensor_id = %s AND timestamp >= %s"
-                rows = cassandra_session.execute(query, (sensor_id, today_midnight))
-                for row in rows:
-                    response["total_clean"] += row.count
+        # List files in stats output directory (Spark writes part-*.json files)
+        files = client.list(stats_path)
+        part_files = [f for f in files if f.startswith('part-') and f.endswith('.json')]
+        
+        if part_files:
+            with client.read(f"{stats_path}/{part_files[0]}", encoding='utf-8') as r:
+                for line in r:
+                    if line.strip():
+                        data = json.loads(line)
+                        response["total_clean"] = data.get("total_clean", 0)
+                        response["total_discarded"] = data.get("total_discarded", 0)
+                        response["total_processed"] = data.get("total_processed", 0)
+                        break
     except Exception as e:
-        log.error(f"Cassandra count error: {e}")
-    
-    # Get discarded count from discard_stats.json (speed-layer-consumer)
-    try:
-        if client.status(HDFS_DISCARD_STATS_PATH, strict=False):
-            with client.read(HDFS_DISCARD_STATS_PATH, encoding='utf-8') as r:
-                content = r.read()
-                if content:
-                    discard_data = json.loads(content)
-                    response["total_discarded"] = discard_data.get("total", 0)
-    except: pass
-    
-    # Calculate total processed = clean + discarded
-    response["total_processed"] = response["total_clean"] + response["total_discarded"]
+        log.debug(f"Aggregate stats not yet available: {e}")
     
     return jsonify(response)
 

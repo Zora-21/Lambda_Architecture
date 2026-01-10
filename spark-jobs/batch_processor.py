@@ -23,6 +23,7 @@ INPUT_PATH = f"{HDFS_NAMENODE}/iot-data/incoming/*.jsonl"
 OUTPUT_PATH = f"{HDFS_NAMENODE}/iot-output/spark"
 ARCHIVE_PATH = f"{HDFS_NAMENODE}/iot-data/archive"
 MODEL_PATH = f"{HDFS_NAMENODE}/models/model.json"
+AGGREGATE_STATS_PATH = f"{HDFS_NAMENODE}/iot-stats/daily-aggregate"
 
 
 def load_model(spark):
@@ -77,6 +78,11 @@ def main():
     print(f"Loaded model with {len(model)} sensors")
     
     # Filter anomalies if model exists
+    # Track counts for aggregate stats (like old project's reducer)
+    total_count = record_count
+    clean_count = record_count
+    discarded_count = 0
+    
     if model:
         model_broadcast = spark.sparkContext.broadcast(model)
         
@@ -96,8 +102,9 @@ def main():
         is_valid_udf = udf(is_valid, BooleanType())
         
         df_filtered = df.filter(is_valid_udf(col("sensor_id"), col("temp")))
-        filtered_count = df_filtered.count()
-        print(f"After filtering: {filtered_count} records (removed {record_count - filtered_count} anomalies)")
+        clean_count = df_filtered.count()
+        discarded_count = total_count - clean_count
+        print(f"After filtering: {clean_count} records (removed {discarded_count} anomalies)")
     else:
         df_filtered = df
         print("No model available, skipping anomaly filtering")
@@ -202,6 +209,23 @@ def main():
         print(f"Data archived to: {archive_path}")
     except Exception as e:
         print(f"Error archiving data: {e}")
+    
+    # --- Write aggregate stats (like old project's aggregate_stats.py) ---
+    aggregate_stats = {
+        "total_clean": clean_count,
+        "total_discarded": discarded_count,
+        "total_processed": total_count
+    }
+    
+    stats_path = f"{AGGREGATE_STATS_PATH}/date={today}"
+    try:
+        # Create a DataFrame with a single row and write as JSON
+        stats_df = spark.createDataFrame([aggregate_stats])
+        stats_df.coalesce(1).write.mode("overwrite").json(stats_path)
+        print(f"Aggregate stats saved to: {stats_path}")
+        print(f"  -> Total: {total_count}, Clean: {clean_count}, Discarded: {discarded_count}")
+    except Exception as e:
+        print(f"Error saving aggregate stats: {e}")
     
     print("\n" + "=" * 60)
     print("Batch Processing Complete!")

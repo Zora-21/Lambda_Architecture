@@ -32,23 +32,8 @@ model_last_refresh = 0
 model_mtime = 0  # Modification time of model on HDFS
 cassandra_session = None
 processed_count = 0
-filtered_count = 0
-HDFS_DISCARD_STATS_PATH = '/models/discard_stats.json'
 
 
-def flush_discard_stats(count):
-    """Scrive il conteggio anomalie su HDFS."""
-    try:
-        # Write via WebHDFS
-        url = f"http://{HDFS_HOST}:9870/webhdfs/v1{HDFS_DISCARD_STATS_PATH}?op=CREATE&overwrite=true&user.name=root"
-        resp = requests.put(url, allow_redirects=False, timeout=10)
-        if resp.status_code == 307:
-            redirect_url = resp.headers['Location']
-            data = json.dumps({"total": count})
-            requests.put(redirect_url, data=data.encode('utf-8'), timeout=10)
-            logger.debug(f"Discard stats flushed: {count}")
-    except Exception as e:
-        logger.warning(f"Failed to flush discard stats: {e}")
 
 
 def load_model():
@@ -182,7 +167,7 @@ def write_to_cassandra(data):
 
 
 def main():
-    global filtered_count, model_last_refresh
+    global model_last_refresh
     
     logger.info("Speed Layer Consumer starting...")
     
@@ -247,15 +232,12 @@ def main():
                 }
                 write_to_cassandra(record)
             else:
-                filtered_count += 1
                 logger.debug(f"Filtered anomaly: {sensor_id}={price}")
             
-            # Log status every 30 seconds and flush discard stats
+            # Log status every 30 seconds
             if time.time() - last_status_log > 30:
-                logger.info(f"Status: Processed={processed_count}, Filtered={filtered_count}")
+                logger.info(f"Status: Processed to Cassandra={processed_count}")
                 last_status_log = time.time()
-                # Flush discard stats to HDFS
-                flush_discard_stats(filtered_count)
                 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
