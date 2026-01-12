@@ -70,21 +70,52 @@ def get_realtime_data():
     except: pass
     return jsonify({"temp": "N/A", "status": "NO_DATA"})
 
+@app.route('/data/latency')
+def get_latency():
+    """
+    Calcola la latenza end-to-end (producer → dashboard) per ogni sensore.
+    Latenza = now - timestamp dell'ultimo dato in Cassandra
+    """
+    init_cassandra()
+    latencies = {}
+    sensors = ['A1', 'B1', 'C1']
+    sensor_names = {'A1': 'BTC', 'B1': 'ETH', 'C1': 'SOL'}
+    
+    try:
+        now = datetime.utcnow()
+        for sensor_id in sensors:
+            try:
+                row = cassandra_session.execute(
+                    f"SELECT timestamp FROM sensor_data WHERE sensor_id = '{sensor_id}' LIMIT 1"
+                ).one()
+                if row and row.timestamp:
+                    # Calcola latenza in millisecondi
+                    latency_ms = (now - row.timestamp).total_seconds() * 1000
+                    latencies[sensor_names[sensor_id]] = round(latency_ms, 0)
+                else:
+                    latencies[sensor_names[sensor_id]] = 0
+            except:
+                latencies[sensor_names[sensor_id]] = 0
+    except Exception as e:
+        log.error(f"Latency error: {e}")
+    
+    return jsonify(latencies)
+
 @app.route('/data/realtime/trend')
 def get_realtime_trend():
     """
-    Recupera i dati a partire dalla MEZZANOTTE di oggi (Visione Giornaliera).
+    Recupera i dati delle ultime 24 ore per persistenza storica.
     Aggrega i dati facendo la media per MINUTO.
     """
     init_cassandra()
     sensor_id = request.args.get('sensor_id')
     try:
-        # 1. Calcola l'inizio della giornata odierna (UTC 00:00:00)
-        today_midnight = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        # 1. Calcola il timestamp di 24 ore fa (persistenza storica)
+        twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
         
-        # 2. Query: Prendi tutto da mezzanotte in poi
+        # 2. Query: Prendi tutti i dati delle ultime 24 ore
         query = "SELECT timestamp, temp FROM sensor_data WHERE sensor_id = %s AND timestamp >= %s"
-        rows = cassandra_session.execute(query, (sensor_id, today_midnight))
+        rows = cassandra_session.execute(query, (sensor_id, twenty_four_hours_ago))
         
         # 3. Aggregazione per MINUTO (Downsampling)
         data_by_minute = defaultdict(list)
@@ -140,26 +171,39 @@ def get_batch_data():
 
 @app.route('/data/aggregate_stats')
 def get_aggregate_stats():
-    """Read aggregate stats from batch layer HDFS output (like old project)."""
+    """Read aggregate stats from batch layer HDFS output."""
     client = get_hdfs_client()
     response = {"total_clean": 0, "total_processed": 0, "total_discarded": 0}
     today = datetime.utcnow().strftime('%Y-%m-%d')
-    stats_path = f"{HDFS_STATS_DIR}/date={today}"
+    
+    # Nuovo formato: file JSON singolo
+    stats_file_path = f"{HDFS_STATS_DIR}/stats_{today}.json"
     
     try:
-        # List files in stats output directory (Spark writes part-*.json files)
-        files = client.list(stats_path)
-        part_files = [f for f in files if f.startswith('part-') and f.endswith('.json')]
-        
-        if part_files:
-            with client.read(f"{stats_path}/{part_files[0]}", encoding='utf-8') as r:
-                for line in r:
-                    if line.strip():
-                        data = json.loads(line)
-                        response["total_clean"] = data.get("total_clean", 0)
-                        response["total_discarded"] = data.get("total_discarded", 0)
-                        response["total_processed"] = data.get("total_processed", 0)
-                        break
+        # Prova prima il nuovo formato (file singolo)
+        if client.status(stats_file_path, strict=False):
+            with client.read(stats_file_path, encoding='utf-8') as r:
+                content = r.read()
+                if content:
+                    data = json.loads(content)
+                    response["total_clean"] = data.get("total_clean", 0)
+                    response["total_discarded"] = data.get("total_discarded", 0)
+                    response["total_processed"] = data.get("total_processed", 0)
+        else:
+            # Fallback al vecchio formato (directory Spark con part files)
+            stats_path = f"{HDFS_STATS_DIR}/date={today}"
+            files = client.list(stats_path)
+            part_files = [f for f in files if f.startswith('part-') and f.endswith('.json')]
+            
+            if part_files:
+                with client.read(f"{stats_path}/{part_files[0]}", encoding='utf-8') as r:
+                    for line in r:
+                        if line.strip():
+                            data = json.loads(line)
+                            response["total_clean"] = data.get("total_clean", 0)
+                            response["total_discarded"] = data.get("total_discarded", 0)
+                            response["total_processed"] = data.get("total_processed", 0)
+                            break
     except Exception as e:
         log.debug(f"Aggregate stats not yet available: {e}")
     
@@ -191,7 +235,7 @@ def get_perf():
     init_docker()
     if not docker_client: return jsonify({})
     stats = {}
-    for name in ['kafka-producer', 'speed-layer-consumer', 'batch-layer-consumer', 'dashboard', 'namenode', 'datanode', 'cassandra-seed', 'kafka', 'zookeeper', 'spark-master', 'spark-worker-1', 'spark-worker-2', 'spark-scheduler']:
+    for name in ['kafka-producer', 'speed-layer-consumer', 'batch-layer-consumer', 'dashboard', 'namenode', 'datanode', 'cassandra-seed', 'kafka', 'zookeeper', 'spark-master', 'spark-worker-1', 'spark-worker-2', 'spark-worker-3', 'spark-scheduler']:
         try:
             c = docker_client.containers.get(name)
             s = c.stats(stream=False)

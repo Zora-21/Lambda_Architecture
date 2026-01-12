@@ -21,6 +21,7 @@ from datetime import datetime
 # Configuration
 HDFS_NAMENODE = "hdfs://namenode:9000"
 INPUT_PATH = f"{HDFS_NAMENODE}/iot-data/incoming/*.jsonl"
+INPUT_DIR = f"{HDFS_NAMENODE}/iot-data/incoming"
 OUTPUT_PATH = f"{HDFS_NAMENODE}/iot-output/spark"
 ARCHIVE_PATH = f"{HDFS_NAMENODE}/iot-data/archive"
 MODEL_PATH = f"{HDFS_NAMENODE}/models/model.json"
@@ -62,6 +63,41 @@ def get_model_age(spark):
         print(f"Error checking model age: {e}")
         
     return -1
+
+
+def clear_incoming_files(spark):
+    """
+    Elimina tutti i file .jsonl dalla cartella /incoming dopo l'archiviazione.
+    Questo previene il riprocessamento degli stessi dati.
+    """
+    try:
+        sc = spark.sparkContext
+        fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+            spark._jvm.java.net.URI(HDFS_NAMENODE),
+            sc._jsc.hadoopConfiguration()
+        )
+        incoming_path = spark._jvm.org.apache.hadoop.fs.Path("/iot-data/incoming")
+        
+        if fs.exists(incoming_path):
+            # Lista tutti i file nella directory
+            file_status_list = fs.listStatus(incoming_path)
+            deleted_count = 0
+            
+            for file_status in file_status_list:
+                file_path = file_status.getPath()
+                file_name = file_path.getName()
+                
+                # Elimina solo i file .jsonl (non toccare altre estensioni)
+                if file_name.endswith('.jsonl'):
+                    fs.delete(file_path, False)  # False = non ricorsivo
+                    deleted_count += 1
+            
+            print(f"✅ Cleaned up {deleted_count} processed files from /incoming")
+            return deleted_count
+    except Exception as e:
+        print(f"⚠️ Warning: Could not clear incoming files: {e}")
+    
+    return 0
 
 
 def main():
@@ -218,9 +254,89 @@ def main():
     print("=" * 60)
     result.show(truncate=False)
     
-    # Save results
+    # Save results with INCREMENTAL count
     today = datetime.now().strftime("%Y-%m-%d")
     output_path = f"{OUTPUT_PATH}/date={today}"
+    
+    # --- IMPORTANTE: Check PRIMA se è una calibration run ---
+    # Calibration = PRIMO run del giorno dove OHLC output non esiste ancora
+    # E il modello è stato creato di recente (< 120s)
+    
+    is_calibration_run = False
+    try:
+        sc = spark.sparkContext
+        fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+            spark._jvm.java.net.URI(HDFS_NAMENODE),
+            sc._jsc.hadoopConfiguration()
+        )
+        ohlc_output_dir = spark._jvm.org.apache.hadoop.fs.Path(f"/iot-output/spark/date={today}")
+        
+        # Se l'output OHLC NON esiste, è la prima run del giorno
+        if not fs.exists(ohlc_output_dir):
+            model_age = get_model_age(spark)
+            # Solo se il modello è stato appena creato (< 120s), è calibrazione
+            if 0 <= model_age < 120:
+                is_calibration_run = True
+                print(f"📋 First run of the day + fresh model ({model_age:.1f}s) = Calibration")
+            else:
+                print(f"📋 First run of the day but model is old ({model_age:.1f}s) - NOT calibration")
+        else:
+            print(f"📋 OHLC output exists for today - NOT calibration")
+    except Exception as e:
+        print(f"Error checking calibration status: {e}")
+    
+    # --- Rendi il count incrementale (SOLO se NON è calibration run) ---
+    existing_counts = {}
+    if not is_calibration_run:
+        try:
+            sc = spark.sparkContext
+            fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+                spark._jvm.java.net.URI(HDFS_NAMENODE),
+                sc._jsc.hadoopConfiguration()
+            )
+            output_dir = spark._jvm.org.apache.hadoop.fs.Path(f"/iot-output/spark/date={today}")
+            
+            if fs.exists(output_dir):
+                file_status_list = fs.listStatus(output_dir)
+                for file_status in file_status_list:
+                    file_path = file_status.getPath()
+                    file_name = file_path.getName()
+                    
+                    if file_name.startswith('part-') and file_name.endswith('.json'):
+                        input_stream = fs.open(file_path)
+                        reader = spark._jvm.java.io.BufferedReader(
+                            spark._jvm.java.io.InputStreamReader(input_stream, "UTF-8")
+                        )
+                        line = reader.readLine()
+                        while line is not None:
+                            if line.strip():
+                                existing_data = json.loads(line)
+                                sensor_id = existing_data.get("sensor_id")
+                                if sensor_id:
+                                    existing_counts[sensor_id] = existing_data.get("count", 0)
+                            line = reader.readLine()
+                        reader.close()
+                        input_stream.close()
+                
+                if existing_counts:
+                    print(f"Found existing counts: {existing_counts}")
+        except Exception as e:
+            print(f"No existing counts found (starting fresh): {e}")
+        
+        # Aggiungi i conteggi esistenti ai nuovi
+        if existing_counts:
+            # Converti in lista, aggiorna i count, e ricrea il DataFrame
+            result_list = [row.asDict() for row in result.collect()]
+            for row in result_list:
+                sensor_id = row.get("sensor_id")
+                if sensor_id in existing_counts:
+                    row["count"] = row["count"] + existing_counts[sensor_id]
+            
+            # Ricrea il DataFrame con i count aggiornati
+            result = spark.createDataFrame(result_list)
+            print("Updated counts with existing values (INCREMENTAL)")
+    else:
+        print("⏭️ Calibration run detected - OHLC counts will NOT be incremented")
     
     try:
         result.coalesce(1).write.mode("overwrite").json(output_path)
@@ -230,17 +346,23 @@ def main():
     
     # Archive processed data
     archive_path = f"{ARCHIVE_PATH}/date={today}"
+    archive_success = False
     try:
         df_filtered.coalesce(1).write.mode("append").json(archive_path)
         print(f"Data archived to: {archive_path}")
+        archive_success = True
     except Exception as e:
         print(f"Error archiving data: {e}")
     
-    # --- Write aggregate stats (like old project's aggregate_stats.py) ---
+    # --- IMPORTANTE: Elimina i file processati da /incoming ---
+    # Questo previene il doppio conteggio alla prossima esecuzione
+    if archive_success:
+        clear_incoming_files(spark)
+    else:
+        print("⚠️ Skipping cleanup: archive failed, data preserved for retry")
     
-    # Check if this is a calibration run (Model < 2 minutes old)
-    model_age = get_model_age(spark)
-    is_calibration_run = 0 <= model_age < 120
+    # --- Write aggregate stats (like old project's aggregate_stats.py) ---
+    # (is_calibration_run già calcolato sopra)
     
     if is_calibration_run:
         print("\n" + "!" * 60)
@@ -248,19 +370,90 @@ def main():
         print("This is likely a Calibration Run. Data archived but not counted in daily stats.")
         print("!" * 60 + "\n")
     else:
+        # --- CORREZIONE v2: Usa un file JSON singolo invece di directory Spark ---
+        # Questo evita il problema dove mode("overwrite") elimina la directory prima della lettura
+        stats_file_path = f"/iot-stats/daily-aggregate/stats_{today}.json"
+        
+        # Inizializza con zero
+        existing_clean = 0
+        existing_discarded = 0
+        existing_processed = 0
+        
+        try:
+            # Leggi il file esistente usando l'API HDFS FileSystem
+            sc = spark.sparkContext
+            fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+                spark._jvm.java.net.URI(HDFS_NAMENODE),
+                sc._jsc.hadoopConfiguration()
+            )
+            file_path = spark._jvm.org.apache.hadoop.fs.Path(stats_file_path)
+            
+            if fs.exists(file_path):
+                # Leggi il contenuto del file
+                input_stream = fs.open(file_path)
+                reader = spark._jvm.java.io.BufferedReader(
+                    spark._jvm.java.io.InputStreamReader(input_stream, "UTF-8")
+                )
+                content = ""
+                line = reader.readLine()
+                while line is not None:
+                    content += line
+                    line = reader.readLine()
+                reader.close()
+                input_stream.close()
+                
+                if content:
+                    existing_data = json.loads(content)
+                    existing_clean = existing_data.get("total_clean", 0)
+                    existing_discarded = existing_data.get("total_discarded", 0)
+                    existing_processed = existing_data.get("total_processed", 0)
+                    print(f"Found existing stats: Clean={existing_clean}, Discarded={existing_discarded}, Total={existing_processed}")
+        except Exception as e:
+            # File non esiste ancora, parti da zero
+            print(f"No existing stats found (starting fresh): {e}")
+        
+        # Somma i nuovi valori a quelli esistenti (INCREMENTALE)
+        # IMPORTANTE: total_clean = sum dei counts OHLC (che sono GIÀ incrementali dalla linea 331)
+        # Quindi NON aggiungiamo existing_clean, altrimenti conteremmo due volte!
+        ohlc_total_clean = 0
+        try:
+            result_data = [row.asDict() for row in result.collect()]
+            ohlc_total_clean = sum(row.get("count", 0) for row in result_data)
+            print(f"OHLC sum of all sensor counts: {ohlc_total_clean}")
+        except Exception as e:
+            print(f"Warning: could not calculate OHLC sum: {e}")
+            # Fallback: usa existing + new clean count
+            ohlc_total_clean = existing_clean + clean_count
+        
         aggregate_stats = {
-            "total_clean": clean_count,
-            "total_discarded": discarded_count,
-            "total_processed": total_count
+            "total_clean": ohlc_total_clean,  # Somma dei counts OHLC (già incrementali)
+            "total_discarded": existing_discarded + discarded_count,
+            "total_processed": existing_processed + total_count
         }
         
-        stats_path = f"{AGGREGATE_STATS_PATH}/date={today}"
         try:
-            # Create a DataFrame with a single row and write as JSON
-            stats_df = spark.createDataFrame([aggregate_stats])
-            stats_df.coalesce(1).write.mode("overwrite").json(stats_path)
-            print(f"Aggregate stats saved to: {stats_path}")
-            print(f"  -> Total: {total_count}, Clean: {clean_count}, Discarded: {discarded_count}")
+            # Scrivi il file JSON tramite HDFS FileSystem API
+            sc = spark.sparkContext
+            fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+                spark._jvm.java.net.URI(HDFS_NAMENODE),
+                sc._jsc.hadoopConfiguration()
+            )
+            
+            # Assicurati che la directory esista
+            dir_path = spark._jvm.org.apache.hadoop.fs.Path("/iot-stats/daily-aggregate")
+            if not fs.exists(dir_path):
+                fs.mkdirs(dir_path)
+            
+            file_path = spark._jvm.org.apache.hadoop.fs.Path(stats_file_path)
+            
+            # Scrivi il nuovo contenuto (sovrascrive il file precedente)
+            output_stream = fs.create(file_path, True)  # True = overwrite
+            output_stream.write(json.dumps(aggregate_stats).encode('utf-8'))
+            output_stream.close()
+            
+            print(f"Aggregate stats saved to: {stats_file_path}")
+            print(f"  -> This batch: Total={total_count}, Clean={clean_count}, Discarded={discarded_count}")
+            print(f"  -> Cumulative: Total={aggregate_stats['total_processed']}, Clean={aggregate_stats['total_clean']}, Discarded={aggregate_stats['total_discarded']}")
         except Exception as e:
             print(f"Error saving aggregate stats: {e}")
     

@@ -313,16 +313,22 @@
         <div class="chart-stack">
             <div id="trend-placeholder"></div>
             <div class="card" id="hero-chart-card">
-                <h2>📉 Real-Time Trend</h2>
-                <div class="chart-container" style="min-height:300px;"><canvas id="realtimeLineChart"></canvas></div>
+                <h2>📉 Real-Time Trend <span
+                        style="margin-left: auto; display: flex; gap: 15px; font-size: 0.75em; font-weight: 500;"><span
+                            style="display: flex; align-items: center; gap: 5px;"><span
+                                style="width: 14px; height: 14px; background: rgba(0, 123, 255, 1); border-radius: 3px;"></span>Price</span><span
+                            style="display: flex; align-items: center; gap: 5px;"><span
+                                style="width: 14px; height: 3px; background: rgba(255, 99, 132, 0.8); border-radius: 2px; border: 1px dashed rgba(255, 99, 132, 0.8);"></span>Daily
+                            Avg</span></span></h2>
+                <div class="chart-container" style="min-height:435px;"><canvas id="realtimeLineChart"></canvas></div>
             </div>
             <div class="card">
                 <h2>💾 Memory Usage (RAM)</h2>
-                <div class="chart-container" style="min-height: 245px;"><canvas id="memoryChart"></canvas></div>
+                <div class="chart-container" style="min-height: 340px;"><canvas id="memoryChart"></canvas></div>
             </div>
             <div class="card">
-                <h2>🌐 Network Traffic (I/O)</h2>
-                <div class="chart-container" style="min-height: 245px;"><canvas id="networkChart"></canvas></div>
+                <h2>⏱️ End-to-End Latency (ms)</h2>
+                <div class="chart-container" style="min-height: 120px;"><canvas id="latencyChart"></canvas></div>
             </div>
         </div>
     </div>
@@ -334,7 +340,7 @@
             else if (window.scrollY <= scrollThreshold && !isHero) { body.classList.add('hero-mode'); document.getElementById('scroll-hint').style.opacity = '1'; if (realtimeLineChartInstance) realtimeLineChartInstance.resize(); }
         });
 
-        let realtimeLineChartInstance, memoryChartInstance, networkChartInstance;
+        let realtimeLineChartInstance, memoryChartInstance, latencyChartInstance;
         // Variabile per memorizzare l'inizio della "sessione" di dati (primo dato assoluto)
         let trendAxisStart = null;
         let currentDailyAvg = null; // Variabile globale per la media giornaliera
@@ -356,6 +362,9 @@
                 },
                 options: {
                     responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
                     scales: {
                         y: { title: { display: true, text: 'Price (USD)' }, beginAtZero: false },
                         x: {
@@ -369,8 +378,46 @@
             });
         }
 
-        function createBarChart(id) { return new Chart(document.getElementById(id).getContext('2d'), { type: 'bar', data: { labels: [], datasets: [] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true, stacked: true }, y: { stacked: true } } } }); }
-        function initializePerformanceCharts() { memoryChartInstance = createBarChart('memoryChart'); memoryChartInstance.data.datasets = [{ label: 'Used', data: [], backgroundColor: 'rgba(0, 123, 255, 0.8)' }]; networkChartInstance = createBarChart('networkChart'); networkChartInstance.data.datasets = [{ label: 'Rx', data: [], backgroundColor: 'rgba(40, 167, 69, 0.8)' }, { label: 'Tx', data: [], backgroundColor: 'rgba(255, 193, 7, 0.8)' }]; }
+        function createBarChart(id, showLegend = true, legendPosition = 'top', stacked = true) {
+            return new Chart(document.getElementById(id).getContext('2d'), {
+                type: 'bar',
+                data: { labels: [], datasets: [] },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: {
+                        padding: { left: 10 }
+                    },
+                    plugins: {
+                        legend: {
+                            display: showLegend,
+                            position: legendPosition,
+                            labels: { boxWidth: 12, padding: 8, font: { size: 10 } }
+                        }
+                    },
+                    scales: {
+                        x: { beginAtZero: true, stacked: stacked },
+                        y: {
+                            stacked: stacked,
+                            ticks: {
+                                autoSkip: false,
+                                font: { size: 10 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        function initializePerformanceCharts() {
+            memoryChartInstance = createBarChart('memoryChart', false, 'top', true);
+            memoryChartInstance.data.datasets = [
+                { label: 'RAM (MB)', data: [], backgroundColor: 'rgba(0, 123, 255, 0.8)' }
+            ];
+            // Latency chart
+            latencyChartInstance = createBarChart('latencyChart', false, 'top', false);
+            latencyChartInstance.data.datasets = [{ label: 'Latency (ms)', data: [], backgroundColor: ['rgba(242, 169, 0, 0.8)', 'rgba(98, 126, 234, 0.8)', 'rgba(153, 69, 255, 0.8)'] }];
+        }
 
         async function updateRealtimeData(sensorId) {
             const conf = SENSOR_DETAILS[sensorId];
@@ -394,31 +441,35 @@
                     realtimeLineChartInstance.data.datasets[0].backgroundColor = conf.color.replace('1)', '0.1)');
 
                     if (data.data.length > 0) {
-                        realtimeLineChartInstance.data.datasets[0].data = data.data;
-
-                        // --- LOGICA PERSISTENZA ASSE X (START + 12H) ---
-                        // Prendiamo il timestamp del PRIMISSIMO dato presente nel database (indice 0)
+                        const twelveHours = 12 * 60 * 60 * 1000;
                         const firstDataPointTime = new Date(data.data[0].x).getTime();
+                        const lastDataPointTime = new Date(data.data[data.data.length - 1].x).getTime();
+                        const dataSpan = lastDataPointTime - firstDataPointTime;
 
-                        // Se l'asse non è stato ancora fissato, o se è cambiato drasticamente (es. cambio coin), lo impostiamo.
-                        // Una volta fissato, NON LO CAMBIAMO PIÙ durante questa sessione.
-                        // Questo garantisce che al refresh della pagina, l'asse si ricalcoli basandosi sempre sul primo dato storico.
-                        if (!trendAxisStart || Math.abs(trendAxisStart - firstDataPointTime) > 60000) {
-                            trendAxisStart = firstDataPointTime;
-                            realtimeLineChartInstance.options.scales.x.min = trendAxisStart;
+                        // --- FINESTRA MOBILE 12 ORE (PARTE DA SINISTRA) ---
+                        let windowStart, windowEnd;
 
-                            // LOGICA DINAMICA: Minimo 12 ore, ma si espande se i dati superano le 12 ore
-                            const twelveHours = 12 * 60 * 60 * 1000;
-                            const lastDataPointTime = new Date(data.data[data.data.length - 1].x).getTime();
-                            realtimeLineChartInstance.options.scales.x.max = Math.max(trendAxisStart + twelveHours, lastDataPointTime);
+                        if (dataSpan < twelveHours) {
+                            // Meno di 12 ore di dati: parte dall'inizio con finestra fissa di 12 ore
+                            windowStart = firstDataPointTime;
+                            windowEnd = firstDataPointTime + twelveHours;
+                            // Mostra tutti i dati
+                            realtimeLineChartInstance.data.datasets[0].data = data.data;
                         } else {
-                            // Anche se l'asse è già fissato, controlliamo se dobbiamo espanderlo per nuovi dati
-                            const twelveHours = 12 * 60 * 60 * 1000;
-                            const lastDataPointTime = new Date(data.data[data.data.length - 1].x).getTime();
-                            if (lastDataPointTime > trendAxisStart + twelveHours) {
-                                realtimeLineChartInstance.options.scales.x.max = lastDataPointTime;
-                            }
+                            // Più di 12 ore: finestra mobile che shifta
+                            windowEnd = lastDataPointTime;
+                            windowStart = windowEnd - twelveHours;
+                            // Filtra i dati per mostrare solo gli ultimi 12 ore
+                            const filteredData = data.data.filter(point => {
+                                const pointTime = new Date(point.x).getTime();
+                                return pointTime >= windowStart;
+                            });
+                            realtimeLineChartInstance.data.datasets[0].data = filteredData;
                         }
+
+                        // Aggiorna l'asse X
+                        realtimeLineChartInstance.options.scales.x.min = windowStart;
+                        realtimeLineChartInstance.options.scales.x.max = windowEnd;
 
                         // --- AGGIORNAMENTO LINEA MEDIA GIORNALIERA ---
                         if (currentDailyAvg !== null) {
@@ -462,7 +513,7 @@
                 currentDailyAvg = m.mean;
 
                 // Helper per arrotondare
-                const round = (v, d=2) => v != null ? Number(v).toFixed(d) : 'N/A';
+                const round = (v, d = 2) => v != null ? Number(v).toFixed(d) : 'N/A';
 
                 const cls = m.daily_change >= 0 ? 'positive' : 'negative';
                 const rsiVal = m.avg_rsi || m.rsi;
@@ -486,16 +537,39 @@
             }
         }
 
-        async function updateDataStats() { 
-            try { 
-                const r_agg = await fetch('/data/aggregate_stats'); 
-                const d_agg = await r_agg.json(); 
-                document.getElementById('total-clean').textContent = (d_agg.total_clean || 0).toLocaleString(); 
-                document.getElementById('total-discarded').textContent = (d_agg.total_discarded || 0).toLocaleString(); 
-                document.getElementById('total-processed').textContent = (d_agg.total_processed || 0).toLocaleString(); 
-            } catch (e) { } 
+        async function updateDataStats() {
+            try {
+                const r_agg = await fetch('/data/aggregate_stats');
+                const d_agg = await r_agg.json();
+                document.getElementById('total-clean').textContent = (d_agg.total_clean || 0).toLocaleString();
+                document.getElementById('total-discarded').textContent = (d_agg.total_discarded || 0).toLocaleString();
+                document.getElementById('total-processed').textContent = (d_agg.total_processed || 0).toLocaleString();
+            } catch (e) { }
         }
-        async function updatePerf() { try { const r = await fetch('/data/performance'); const d = await r.json(); const l = Object.keys(d).sort(); if (memoryChartInstance) { memoryChartInstance.data.labels = l; memoryChartInstance.data.datasets[0].data = l.map(k => d[k].mem_mb); memoryChartInstance.update('none'); } if (networkChartInstance) { networkChartInstance.data.labels = l; networkChartInstance.data.datasets[0].data = l.map(k => d[k].net_rx_mb); networkChartInstance.data.datasets[1].data = l.map(k => d[k].net_tx_mb); networkChartInstance.update('none'); } } catch (e) { } }
+        async function updatePerf() {
+            try {
+                const r = await fetch('/data/performance');
+                const d = await r.json();
+                const l = Object.keys(d).sort();
+                if (memoryChartInstance) {
+                    memoryChartInstance.data.labels = l;
+                    memoryChartInstance.data.datasets[0].data = l.map(k => d[k].mem_mb);
+                    memoryChartInstance.update('none');
+                }
+            } catch (e) { }
+
+            // Update latency chart
+            try {
+                const latRes = await fetch('/data/latency');
+                const latData = await latRes.json();
+                if (latencyChartInstance) {
+                    const sensors = Object.keys(latData).sort();
+                    latencyChartInstance.data.labels = sensors;
+                    latencyChartInstance.data.datasets[0].data = sensors.map(s => latData[s]);
+                    latencyChartInstance.update('none');
+                }
+            } catch (e) { }
+        }
 
         function updateAll() {
             trendAxisStart = null; // Reset asse se cambio coin

@@ -37,8 +37,8 @@ def main():
         StructField("source", StringType(), True)
     ])
     
-    # Time window: only last 5 minutes
-    window_minutes = 5
+    # Time window: last 60 minutes for better variance capture
+    window_minutes = 60
     cutoff_time = datetime.now() - timedelta(minutes=window_minutes)
     cutoff_str = cutoff_time.strftime("%Y-%m-%dT%H:%M:%S")
     
@@ -98,9 +98,12 @@ def main():
         mean = row["mean"] if row["mean"] is not None else 0
         std_dev = row["std_dev"] if row["std_dev"] is not None else 0
         
+        count_val = row["count"] if row["count"] is not None else 0
+        
         model[sensor_id] = {
             "mean": round(mean, 4),
-            "std_dev": round(std_dev, 4)
+            "std_dev": round(std_dev, 4),
+            "count": int(count_val)  # Include count for EMA initialization
         }
     
     print(f"\nGenerated model for {len(model)} sensors:")
