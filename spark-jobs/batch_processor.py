@@ -287,6 +287,8 @@ def main():
     
     # --- Rendi il count incrementale (SOLO se NON è calibration run) ---
     existing_counts = {}
+    read_existing_success = False
+    
     if not is_calibration_run:
         try:
             sc = spark.sparkContext
@@ -319,9 +321,18 @@ def main():
                         input_stream.close()
                 
                 if existing_counts:
-                    print(f"Found existing counts: {existing_counts}")
+                    print(f"✅ Found existing OHLC counts: {existing_counts}")
+                    read_existing_success = True
+                else:
+                    print("⚠️ OHLC output exists but no counts found - will NOT reset!")
+            else:
+                print("📝 No existing OHLC output - starting fresh for today")
+                read_existing_success = True  # OK, è il primo run
         except Exception as e:
-            print(f"No existing counts found (starting fresh): {e}")
+            print(f"❌ ERROR reading existing counts: {e}")
+            print("   -> CRITICAL: Will NOT save to prevent data loss!")
+            # Se non possiamo leggere i vecchi dati, NON sovrascriviamo!
+            # Questo previene la perdita dei contatori
         
         # Aggiungi i conteggi esistenti ai nuovi
         if existing_counts:
@@ -334,15 +345,22 @@ def main():
             
             # Ricrea il DataFrame con i count aggiornati
             result = spark.createDataFrame(result_list)
-            print("Updated counts with existing values (INCREMENTAL)")
+            print("✅ Updated counts with existing values (INCREMENTAL)")
     else:
         print("⏭️ Calibration run detected - OHLC counts will NOT be incremented")
+        read_existing_success = True  # OK per calibration
+
     
-    try:
-        result.coalesce(1).write.mode("overwrite").json(output_path)
-        print(f"Results saved to: {output_path}")
-    except Exception as e:
-        print(f"Error saving results: {e}")
+    # --- SAVE OHLC (solo se sicuro) ---
+    if read_existing_success:
+        try:
+            result.coalesce(1).write.mode("overwrite").json(output_path)
+            print(f"Results saved to: {output_path}")
+        except Exception as e:
+            print(f"Error saving results: {e}")
+    else:
+        print("❌ SKIPPING OHLC SAVE: Could not read existing counts safely!")
+        print("   -> This prevents counter reset. Fix the underlying issue.")
     
     # Archive processed data
     archive_path = f"{ARCHIVE_PATH}/date={today}"
@@ -431,31 +449,35 @@ def main():
             "total_processed": existing_processed + total_count
         }
         
-        try:
-            # Scrivi il file JSON tramite HDFS FileSystem API
-            sc = spark.sparkContext
-            fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
-                spark._jvm.java.net.URI(HDFS_NAMENODE),
-                sc._jsc.hadoopConfiguration()
-            )
-            
-            # Assicurati che la directory esista
-            dir_path = spark._jvm.org.apache.hadoop.fs.Path("/iot-stats/daily-aggregate")
-            if not fs.exists(dir_path):
-                fs.mkdirs(dir_path)
-            
-            file_path = spark._jvm.org.apache.hadoop.fs.Path(stats_file_path)
-            
-            # Scrivi il nuovo contenuto (sovrascrive il file precedente)
-            output_stream = fs.create(file_path, True)  # True = overwrite
-            output_stream.write(json.dumps(aggregate_stats).encode('utf-8'))
-            output_stream.close()
-            
-            print(f"Aggregate stats saved to: {stats_file_path}")
-            print(f"  -> This batch: Total={total_count}, Clean={clean_count}, Discarded={discarded_count}")
-            print(f"  -> Cumulative: Total={aggregate_stats['total_processed']}, Clean={aggregate_stats['total_clean']}, Discarded={aggregate_stats['total_discarded']}")
-        except Exception as e:
-            print(f"Error saving aggregate stats: {e}")
+        # Solo salvare se la lettura OHLC è andata bene
+        if read_existing_success:
+            try:
+                # Scrivi il file JSON tramite HDFS FileSystem API
+                sc = spark.sparkContext
+                fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+                    spark._jvm.java.net.URI(HDFS_NAMENODE),
+                    sc._jsc.hadoopConfiguration()
+                )
+                
+                # Assicurati che la directory esista
+                dir_path = spark._jvm.org.apache.hadoop.fs.Path("/iot-stats/daily-aggregate")
+                if not fs.exists(dir_path):
+                    fs.mkdirs(dir_path)
+                
+                file_path = spark._jvm.org.apache.hadoop.fs.Path(stats_file_path)
+                
+                # Scrivi il nuovo contenuto (sovrascrive il file precedente)
+                output_stream = fs.create(file_path, True)  # True = overwrite
+                output_stream.write(json.dumps(aggregate_stats).encode('utf-8'))
+                output_stream.close()
+                
+                print(f"Aggregate stats saved to: {stats_file_path}")
+                print(f"  -> This batch: Total={total_count}, Clean={clean_count}, Discarded={discarded_count}")
+                print(f"  -> Cumulative: Total={aggregate_stats['total_processed']}, Clean={aggregate_stats['total_clean']}, Discarded={aggregate_stats['total_discarded']}")
+            except Exception as e:
+                print(f"Error saving aggregate stats: {e}")
+        else:
+            print("❌ SKIPPING AGGREGATE STATS SAVE: OHLC read failed, stats would be inconsistent!")
     
     print("\n" + "=" * 60)
     print("Batch Processing Complete!")
