@@ -156,7 +156,8 @@ def main():
             std_dev = m[sensor_id].get('std_dev', 1000)
             if std_dev == 0:
                 return True
-            return (mean - 3 * std_dev) <= price <= (mean + 3 * std_dev)
+            # 4-sigma per coerenza con speed layer EMA (EMA_SIGMA_MULTIPLIER = 4.0)
+            return (mean - 4 * std_dev) <= price <= (mean + 4 * std_dev)
         
         # Register UDF
         from pyspark.sql.functions import udf

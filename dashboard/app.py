@@ -89,9 +89,9 @@ def get_latency():
                     f"SELECT timestamp FROM sensor_data WHERE sensor_id = '{sensor_id}' LIMIT 1"
                 ).one()
                 if row and row.timestamp:
-                    # Calcola latenza in millisecondi
+                    # Calcola latenza in millisecondi (min 0 per evitare valori negativi da clock drift)
                     latency_ms = (now - row.timestamp).total_seconds() * 1000
-                    latencies[sensor_names[sensor_id]] = round(latency_ms, 0)
+                    latencies[sensor_names[sensor_id]] = max(0, round(latency_ms, 0))
                 else:
                     latencies[sensor_names[sensor_id]] = 0
             except:
