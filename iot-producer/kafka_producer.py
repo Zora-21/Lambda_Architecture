@@ -56,12 +56,7 @@ CRYPTO_NAMES = {
 # --- Globals ---
 data_queue = queue.Queue(maxsize=10000)
 kafka_producer = None
-filtering_model = None
-model_lock = threading.Lock()
-anomaly_lock = threading.Lock()
 sent_count = 0
-anomaly_count = 0
-last_anomaly_flush = 0
 
 
 def setup_kafka():
@@ -89,71 +84,6 @@ def setup_kafka():
     return False
 
 
-def load_model():
-    """Carica il modello di filtering da HDFS per logging anomalie."""
-    global filtering_model
-    
-    try:
-        url = f"http://{HDFS_HOST}:9870/webhdfs/v1{HDFS_MODEL_PATH}?op=OPEN"
-        resp = requests.get(url, allow_redirects=True, timeout=10)
-        if resp.status_code == 200:
-            with model_lock:
-                filtering_model = resp.json()
-            log.info(f"🔄 Model loaded: {list(filtering_model.keys())}")
-    except Exception as e:
-        log.debug(f"Could not load model: {e}")
-
-
-def flush_anomaly_stats():
-    """Scrive le statistiche anomalie su HDFS."""
-    global anomaly_count
-    
-    with anomaly_lock:
-        if anomaly_count == 0:
-            return
-        local_count = anomaly_count
-    
-    try:
-        # Leggi il totale corrente
-        current_total = 0
-        url = f"http://{HDFS_HOST}:9870/webhdfs/v1{HDFS_DISCARD_STATS_PATH}?op=OPEN"
-        try:
-            resp = requests.get(url, allow_redirects=True, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                current_total = data.get('total', 0)
-        except:
-            pass
-        
-        # Scrivi il nuovo totale
-        new_total = current_total + local_count
-        create_url = f"http://{HDFS_HOST}:9870/webhdfs/v1{HDFS_DISCARD_STATS_PATH}?op=CREATE&overwrite=true"
-        resp = requests.put(create_url, allow_redirects=False, timeout=10)
-        if resp.status_code == 307:
-            redirect_url = resp.headers['Location']
-            content = json.dumps({"total": new_total})
-            requests.put(redirect_url, data=content.encode('utf-8'), timeout=10)
-            
-            with anomaly_lock:
-                anomaly_count -= local_count
-            log.info(f"📊 Anomaly stats flushed: +{local_count} (total: {new_total})")
-    except Exception as e:
-        log.error(f"Failed to flush anomaly stats: {e}")
-
-
-def is_anomaly(sensor_id, price):
-    """Check if price is an anomaly using 3-sigma rule (for logging only)."""
-    with model_lock:
-        if not filtering_model or sensor_id not in filtering_model:
-            return False
-        model = filtering_model[sensor_id]
-        mean = model.get('mean', price)
-        std_dev = model.get('std_dev', 1000)
-        if std_dev == 0:
-            return False
-        lower_bound = mean - 3 * std_dev
-        upper_bound = mean + 3 * std_dev
-        return not (lower_bound <= price <= upper_bound)
 
 
 def save_local_buffer(record):
@@ -284,8 +214,6 @@ def run_coingecko():
 
 def process_queue():
     """Processa la coda e invia a Kafka."""
-    global anomaly_count
-    
     while True:
         try:
             item = data_queue.get(timeout=1)
@@ -305,15 +233,8 @@ def process_queue():
                 "ingestion_time": datetime.utcnow().isoformat()
             }
             
-            # Log and send
+            # Log and send (filtering happens in Speed Layer and Batch Layer, not here)
             log.info(f"[{src}] -> {sid}: ${price:.2f}")
-            
-            # Check for anomaly (for logging only - still send to Kafka)
-            if is_anomaly(sid, price):
-                with anomaly_lock:
-                    anomaly_count += 1
-                log.info(f"⚠️ Anomaly detected: {sid}=${price:.2f}")
-            
             send_to_kafka(record)
             data_queue.task_done()
             
@@ -345,9 +266,6 @@ def main():
         log.error("Cannot start without Kafka connection")
         return
     
-    # Load initial model (for anomaly logging)
-    load_model()
-    
     # Start data source threads
     threading.Thread(target=run_binance, daemon=True).start()
     threading.Thread(target=run_coinbase, daemon=True).start()
@@ -357,26 +275,17 @@ def main():
     
     log.info("🚀 Kafka Producer Started (Multi-Source Mode)")
     
-    # Main loop - refresh model periodically
-    last_model_refresh = 0
+    # Main loop - just log status periodically
     last_status_log = 0
     
     while True:
         time.sleep(1)
         now = time.time()
         
-        # Refresh model every 60 seconds
-        if now - last_model_refresh > 60:
-            load_model()
-            last_model_refresh = now
-        
         # Log status every 30 seconds
         if now - last_status_log > 30:
-            log.info(f"📊 Status: Sent={sent_count}, Anomalies={anomaly_count}")
+            log.info(f"📊 Status: Sent={sent_count}")
             last_status_log = now
-            
-            # NOTE: Disattivato - il conteggio anomalie è gestito dal speed-layer-consumer
-            # flush_anomaly_stats()
 
 
 if __name__ == "__main__":

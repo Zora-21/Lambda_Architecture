@@ -33,7 +33,7 @@ MODEL_REFRESH_INTERVAL = 300  # 5 minutes
 
 # EMA Configuration
 EMA_ALPHA = float(os.getenv('EMA_ALPHA', '0.1'))  # Smoothing factor (0.1 = slow, 0.3 = reactive)
-EMA_SIGMA_MULTIPLIER = float(os.getenv('EMA_SIGMA', '4.0'))  # How many std devs for bounds
+EMA_SIGMA_MULTIPLIER = float(os.getenv('EMA_SIGMA', '3.0'))  # How many std devs for bounds (3-sigma = 99.7%)
 
 # Global state - EMA model per sensor
 ema_model = {}  # {sensor_id: {'mean': float, 'variance': float, 'count': int}}
@@ -245,7 +245,7 @@ def write_to_cassandra(data):
 
 
 def main():
-    global model_last_refresh
+    global model_last_refresh, filtered_count
     
     logger.info("Speed Layer Consumer starting...")
     
