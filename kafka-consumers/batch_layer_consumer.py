@@ -23,7 +23,7 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
 KAFKA_TOPIC = os.getenv('KAFKA_TOPIC', 'crypto-prices')
 KAFKA_GROUP_ID = os.getenv('KAFKA_BATCH_GROUP_ID', 'batch-layer-group')
 HDFS_HOST = os.getenv('HDFS_HOST', 'namenode')
-BATCH_SIZE = int(os.getenv('BATCH_SIZE', '500'))
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', '1500'))
 BATCH_FLUSH_INTERVAL = int(os.getenv('BATCH_FLUSH_INTERVAL', '60'))
 LOCAL_BUFFER_PATH = '/buffer/hdfs_buffer.jsonl'
 

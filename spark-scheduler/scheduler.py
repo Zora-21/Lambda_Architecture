@@ -27,10 +27,8 @@ HDFS_HOST = os.getenv('HDFS_HOST', 'namenode')
 JOBS_DIR = '/opt/spark/jobs'
 MODEL_PATH = '/models/model.json'
 CALIBRATION_WAIT = 300  # 5 minuti
-MODEL_TRAINER_INTERVAL = 900  # 15 minuti
-BATCH_PROCESSOR_INTERVAL = 150  # 2.5 minuti
+# Event-driven mode: batch_processor runs when new data arrives (MIN_BATCH_INTERVAL = 30s)
 
-last_model_run = 0
 last_batch_run = 0
 
 
@@ -104,13 +102,13 @@ def check_hdfs_data():
 
 
 def main():
-    global last_model_run, last_batch_run
+    global last_batch_run
     
     log.info("=" * 60)
     log.info("Spark Scheduler Starting...")
     log.info(f"  Calibration Wait: {CALIBRATION_WAIT}s")
-    log.info(f"  Model Trainer Interval: {MODEL_TRAINER_INTERVAL}s")
-    log.info(f"  Batch Processor Interval: {BATCH_PROCESSOR_INTERVAL}s")
+    log.info("  Mode: EVENT-DRIVEN (triggers on new data)")
+    log.info("  Min Batch Interval: 30s")
     log.info("=" * 60)
     
     # Wait for Spark to be ready
@@ -138,46 +136,42 @@ def main():
             if check_model_exists():
                 log.info("=" * 60)
                 log.info("✅ CALIBRATION COMPLETE - Model created")
+                log.info("   (Model will be updated incrementally by batch_processor)")
                 log.info("=" * 60)
-                last_model_run = time.time()
             else:
                 log.error("❌ Model trainer ran but model not found - retrying...")
                 time.sleep(60)
                 run_spark_job('model_trainer.py')
-                last_model_run = time.time()
         else:
             log.error("❌ Model training failed - retrying in 60s...")
             time.sleep(60)
             run_spark_job('model_trainer.py')
-            last_model_run = time.time()
     else:
         log.info("✅ Model already exists, skipping calibration")
-        last_model_run = time.time()
     
-    log.info("🚀 Starting normal operations")
-    last_batch_run = time.time()
+    log.info("🚀 Starting normal operations (EVENT-DRIVEN mode)")
+    log.info("   Batch processor will run when new data arrives in HDFS")
+    last_batch_run = 0
+    MIN_BATCH_INTERVAL = 30  # Minimo 30s tra esecuzioni per evitare overhead
     
     while True:
         now = time.time()
         
-        # Run model_trainer every 5 minutes
-        if now - last_model_run >= MODEL_TRAINER_INTERVAL:
-            if run_spark_job('model_trainer.py'):
-                last_model_run = now
-            else:
-                last_model_run = now - MODEL_TRAINER_INTERVAL + 60
-        
-        # Run batch_processor every 2 minutes (if data available)
-        if now - last_batch_run >= BATCH_PROCESSOR_INTERVAL:
-            if check_hdfs_data():
+        # Event-driven: controlla se ci sono dati e processa subito
+        if check_hdfs_data():
+            # Rispetta intervallo minimo per evitare overhead Spark
+            if now - last_batch_run >= MIN_BATCH_INTERVAL:
+                log.info("📥 New data detected in HDFS, triggering batch processor...")
                 if run_spark_job('batch_processor.py'):
                     last_batch_run = now
                 else:
-                    last_batch_run = now - BATCH_PROCESSOR_INTERVAL + 60
+                    log.warning("Batch processor failed, will retry on next data check")
             else:
-                last_batch_run = now
+                remaining = int(MIN_BATCH_INTERVAL - (now - last_batch_run))
+                log.debug(f"Data available but waiting {remaining}s before next run")
         
-        time.sleep(10)
+        # Controlla ogni 5 secondi per nuovi dati
+        time.sleep(5)
 
 
 if __name__ == "__main__":
