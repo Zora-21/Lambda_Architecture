@@ -33,7 +33,7 @@ MODEL_REFRESH_INTERVAL = 300  # 5 minutes
 
 # EMA Configuration
 EMA_ALPHA = float(os.getenv('EMA_ALPHA', '0.1'))  # Smoothing factor (0.1 = slow, 0.3 = reactive)
-EMA_SIGMA_MULTIPLIER = float(os.getenv('EMA_SIGMA', '3.0'))  # How many std devs for bounds (3-sigma = 99.7%)
+EMA_SIGMA_MULTIPLIER = float(os.getenv('EMA_SIGMA', '3.5'))  # How many std devs for bounds (3-sigma = 99.7%)
 
 # Global state - EMA model per sensor
 ema_model = {}  # {sensor_id: {'mean': float, 'variance': float, 'count': int}}
@@ -43,6 +43,10 @@ model_mtime = 0  # Modification time of model on HDFS
 cassandra_session = None
 processed_count = 0
 filtered_count = 0
+
+# Buffer per sensori non ancora nel modello
+unknown_sensor_buffer = {}  # {sensor_id: [list of pending records]}
+UNKNOWN_BUFFER_MAX_SIZE = 1000  # Max records per sensor
 
 
 
@@ -97,7 +101,7 @@ def get_model_mtime():
 
 def check_model_updated():
     """Controlla se il modello è stato aggiornato (throttled ogni 10s)."""
-    global model_last_refresh
+    global model_last_refresh, unknown_sensor_buffer
     
     # Throttle: controlla solo ogni 10 secondi
     if time.time() - model_last_refresh < 10:
@@ -107,8 +111,40 @@ def check_model_updated():
     current_mtime = get_model_mtime()
     if current_mtime > model_mtime:
         logger.info("📥 Model updated on HDFS, merging new sensors...")
-        return load_model()
+        model_updated = load_model()
+        
+        if model_updated:
+            # Processa i dati bufferizzati per sensori ora nel modello
+            process_buffered_sensors()
+        
+        return model_updated
     return False
+
+
+def process_buffered_sensors():
+    """Processa i dati bufferizzati per sensori ora presenti nel modello."""
+    global unknown_sensor_buffer, processed_count, filtered_count
+    
+    sensors_to_remove = []
+    
+    for sensor_id, records in unknown_sensor_buffer.items():
+        if sensor_id in ema_model:
+            logger.info(f"🔓 Processing {len(records)} buffered records for new sensor {sensor_id}")
+            sensors_to_remove.append(sensor_id)
+            
+            for record in records:
+                price = record.get('temp', record.get('price'))
+                if is_valid_known_sensor(sensor_id, price):
+                    write_to_cassandra(record)
+                else:
+                    filtered_count += 1
+    
+    # Rimuovi i sensori processati dal buffer
+    for sensor_id in sensors_to_remove:
+        del unknown_sensor_buffer[sensor_id]
+    
+    if sensors_to_remove:
+        logger.info(f"✅ Processed buffered data for {len(sensors_to_remove)} new sensors")
 
 
 def check_model_exists():
@@ -139,17 +175,13 @@ def update_ema(sensor_id, price):
     """
     Aggiorna il modello EMA per un sensor_id con un nuovo prezzo.
     Restituisce i bounds (lower, upper) calcolati.
+    Ritorna None se il sensore non è nel modello.
     """
     global ema_model
     
     if sensor_id not in ema_model:
-        # Nuovo sensore: inizializza con il primo valore
-        ema_model[sensor_id] = {
-            'mean': price,
-            'variance': 1000000,  # Alta varianza iniziale = accetta tutto
-            'count': 1
-        }
-        return (price - 100000, price + 100000)  # Bounds molto larghi
+        # Sensore sconosciuto: ritorna None per indicare buffering
+        return None
     
     model = ema_model[sensor_id]
     old_mean = model['mean']
@@ -185,13 +217,15 @@ def update_ema(sensor_id, price):
     return (lower, upper)
 
 
-def is_valid(sensor_id, price):
+def is_valid_known_sensor(sensor_id, price):
     """
-    Verifica se il prezzo è valido usando l'EMA adattivo.
-    Aggiorna anche il modello EMA con il nuovo dato.
+    Verifica se il prezzo è valido per un sensore GIÀ NEL MODELLO.
     """
-    lower, upper = update_ema(sensor_id, price)
+    bounds = update_ema(sensor_id, price)
+    if bounds is None:
+        return False
     
+    lower, upper = bounds
     is_ok = lower <= price <= upper
     
     if not is_ok:
@@ -201,6 +235,17 @@ def is_valid(sensor_id, price):
                      f"mean={model.get('mean', 0):.2f}, std={std_dev:.2f}")
     
     return is_ok
+
+
+def is_valid(sensor_id, price):
+    """
+    Verifica se il prezzo è valido usando l'EMA adattivo.
+    Ritorna 'BUFFER' se il sensore non è nel modello.
+    """
+    if sensor_id not in ema_model:
+        return 'BUFFER'  # Sensore sconosciuto, deve essere bufferizzato
+    
+    return is_valid_known_sensor(sensor_id, price)
 
 
 def setup_cassandra():
@@ -300,9 +345,25 @@ def main():
             # Check if model was updated (event-based, not time-based)
             check_model_updated()
             
-            # Filter anomalies
-            if is_valid(sensor_id, price):
-                # Normalize data format
+            # Filter anomalies or buffer unknown sensors
+            validation_result = is_valid(sensor_id, price)
+            
+            if validation_result == 'BUFFER':
+                # Sensore sconosciuto: bufferizza il dato
+                if sensor_id not in unknown_sensor_buffer:
+                    unknown_sensor_buffer[sensor_id] = []
+                    logger.info(f"🆕 Unknown sensor detected: {sensor_id} - buffering data until model is updated")
+                
+                # Aggiungi al buffer (con limite)
+                if len(unknown_sensor_buffer[sensor_id]) < UNKNOWN_BUFFER_MAX_SIZE:
+                    record = {
+                        'sensor_id': sensor_id,
+                        'timestamp': data.get('timestamp'),
+                        'temp': price
+                    }
+                    unknown_sensor_buffer[sensor_id].append(record)
+            elif validation_result:
+                # Dato valido
                 record = {
                     'sensor_id': sensor_id,
                     'timestamp': data.get('timestamp'),
@@ -316,12 +377,13 @@ def main():
             # Log status every 30 seconds
             if time.time() - last_status_log > 30:
                 total = processed_count + filtered_count
+                buffered_total = sum(len(v) for v in unknown_sensor_buffer.values())
                 if total > 0:
                     accept_rate = (processed_count / total) * 100
                     logger.info(f"📊 Status: Accepted={processed_count}, Filtered={filtered_count}, "
-                               f"Rate={accept_rate:.1f}%")
+                               f"Buffered={buffered_total}, Rate={accept_rate:.1f}%")
                 else:
-                    logger.info(f"📊 Status: Waiting for data...")
+                    logger.info(f"📊 Status: Waiting for data... (Buffered={buffered_total})")
                 last_status_log = time.time()
                 
         except Exception as e:

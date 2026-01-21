@@ -28,8 +28,10 @@ JOBS_DIR = '/opt/spark/jobs'
 MODEL_PATH = '/models/model.json'
 CALIBRATION_WAIT = 300  # 5 minuti
 # Event-driven mode: batch_processor runs when new data arrives (MIN_BATCH_INTERVAL = 30s)
+NEW_SENSOR_CHECK_INTERVAL = 300  # Controlla nuovi sensori ogni 5 minuti
 
 last_batch_run = 0
+last_sensor_check = 0
 
 
 def check_model_exists():
@@ -40,6 +42,64 @@ def check_model_exists():
         return resp.status_code == 200
     except:
         return False
+
+
+def get_model_sensors():
+    """Ottiene la lista di sensori presenti nel modello."""
+    try:
+        url = f"http://{HDFS_HOST}:9870/webhdfs/v1{MODEL_PATH}?op=OPEN"
+        resp = requests.get(url, allow_redirects=True, timeout=10)
+        if resp.status_code == 200:
+            import json
+            model = json.loads(resp.text)
+            return set(model.keys())
+    except Exception as e:
+        log.warning(f"Error reading model sensors: {e}")
+    return set()
+
+
+def get_hdfs_sensors():
+    """Ottiene la lista di sensori presenti nei dati HDFS /incoming."""
+    try:
+        # Leggi un file di esempio da /incoming per vedere quali sensori ci sono
+        url = f"http://{HDFS_HOST}:9870/webhdfs/v1/iot-data/incoming?op=LISTSTATUS"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            files = resp.json().get('FileStatuses', {}).get('FileStatus', [])
+            if files:
+                # Leggi il primo file .jsonl
+                for file in files:
+                    if file['pathSuffix'].endswith('.jsonl'):
+                        file_url = f"http://{HDFS_HOST}:9870/webhdfs/v1/iot-data/incoming/{file['pathSuffix']}?op=OPEN"
+                        file_resp = requests.get(file_url, allow_redirects=True, timeout=10)
+                        if file_resp.status_code == 200:
+                            import json
+                            sensors = set()
+                            # Leggi prime 100 righe per trovare i sensori
+                            for i, line in enumerate(file_resp.text.split('\n')[:100]):
+                                if line.strip():
+                                    try:
+                                        data = json.loads(line)
+                                        if 'sensor_id' in data:
+                                            sensors.add(data['sensor_id'])
+                                    except:
+                                        pass
+                            return sensors
+    except Exception as e:
+        log.warning(f"Error reading HDFS sensors: {e}")
+    return set()
+
+
+def check_new_sensors():
+    """Controlla se ci sono nuovi sensori nei dati rispetto al modello."""
+    model_sensors = get_model_sensors()
+    hdfs_sensors = get_hdfs_sensors()
+    
+    if not model_sensors or not hdfs_sensors:
+        return False, set()
+    
+    new_sensors = hdfs_sensors - model_sensors
+    return len(new_sensors) > 0, new_sensors
 
 
 def run_spark_job(job_name):
@@ -89,16 +149,18 @@ def run_spark_job(job_name):
 
 
 def check_hdfs_data():
-    """Verifica se ci sono dati da processare su HDFS."""
+    """Verifica se ci sono dati da processare su HDFS. Ritorna (bool, list of filenames)."""
     try:
         url = f"http://{HDFS_HOST}:9870/webhdfs/v1/iot-data/incoming?op=LISTSTATUS"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             files = resp.json().get('FileStatuses', {}).get('FileStatus', [])
-            return len(files) > 0
+            if files:
+                filenames = [f.get('pathSuffix', 'unknown') for f in files]
+                return True, filenames
     except:
         pass
-    return False
+    return False, []
 
 
 def main():
@@ -151,17 +213,40 @@ def main():
     
     log.info("🚀 Starting normal operations (EVENT-DRIVEN mode)")
     log.info("   Batch processor will run when new data arrives in HDFS")
+    log.info(f"   New sensor detection: every {NEW_SENSOR_CHECK_INTERVAL}s")
     last_batch_run = 0
+    last_sensor_check = 0
     MIN_BATCH_INTERVAL = 30  # Minimo 30s tra esecuzioni per evitare overhead
     
     while True:
         now = time.time()
         
+        # CONTROLLO NUOVI SENSORI (periodico)
+        if now - last_sensor_check >= NEW_SENSOR_CHECK_INTERVAL:
+            log.info("🔍 Checking for new sensors...")
+            has_new, new_sensors = check_new_sensors()
+            if has_new:
+                log.info("=" * 60)
+                log.info(f"🆕 NEW SENSORS DETECTED: {', '.join(sorted(new_sensors))})")
+                log.info("   Re-running model_trainer.py to add new sensors...")
+                log.info("=" * 60)
+                if run_spark_job('model_trainer.py'):
+                    log.info("✅ Model updated with new sensors")
+                else:
+                    log.error("❌ Failed to update model with new sensors")
+            else:
+                log.info("✅ No new sensors detected")
+            last_sensor_check = now
+        
         # Event-driven: controlla se ci sono dati e processa subito
-        if check_hdfs_data():
+        has_data, batch_files = check_hdfs_data()
+        if has_data:
             # Rispetta intervallo minimo per evitare overhead Spark
             if now - last_batch_run >= MIN_BATCH_INTERVAL:
                 log.info("📥 New data detected in HDFS, triggering batch processor...")
+                log.info(f"   📦 Micro-batches to process: {len(batch_files)}")
+                for bf in batch_files:
+                    log.info(f"      - {bf}")
                 if run_spark_job('batch_processor.py'):
                     last_batch_run = now
                 else:

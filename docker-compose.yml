@@ -28,6 +28,10 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
 
   datanode:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
@@ -54,6 +58,10 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
 
   ###############################
   #  KAFKA MESSAGE BROKER
@@ -134,9 +142,15 @@ services:
     environment:
       - CASSANDRA_CLUSTER_NAME=IoTCluster
       - CASSANDRA_SEEDS=cassandra-seed
-      - MAX_HEAP_SIZE=512M 
-      - HEAP_NEWSIZE=128M
-    mem_limit: 2g
+      - MAX_HEAP_SIZE=1G
+      - HEAP_NEWSIZE=256M
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
     networks:
       - lambda-net
     healthcheck:
@@ -218,8 +232,8 @@ services:
       - KAFKA_TOPIC=crypto-prices
       - KAFKA_BATCH_GROUP_ID=batch-layer-group
       - HDFS_HOST=namenode
-      - BATCH_SIZE=1000
-      - BATCH_FLUSH_INTERVAL=120
+      - BATCH_SIZE=5000
+      - BATCH_FLUSH_INTERVAL=180
     depends_on:
       kafka:
         condition: service_healthy
@@ -267,6 +281,10 @@ services:
       - ./spark-jobs:/opt/spark/jobs
     networks:
       - lambda-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
 
   spark-worker-2:
     image: apache/spark:3.5.0
@@ -282,6 +300,10 @@ services:
       - ./spark-jobs:/opt/spark/jobs
     networks:
       - lambda-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
 
   spark-worker-3:
     image: apache/spark:3.5.0
@@ -297,6 +319,10 @@ services:
       - ./spark-jobs:/opt/spark/jobs
     networks:
       - lambda-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
 
   spark-scheduler:
     build:
@@ -341,6 +367,10 @@ services:
         condition: service_healthy
     networks:
       - lambda-net
+    deploy:
+      resources:
+        reservations:
+          cpus: '0.3'
 
 # Definizione della rete virtuale
 networks:

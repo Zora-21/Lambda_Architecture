@@ -28,8 +28,8 @@ MODEL_PATH = f"{HDFS_NAMENODE}/models/model.json"
 STATS_FILE_PATH = "/iot-stats/daily-aggregate"
 
 # Parametri di filtraggio
-CHUNK_SIZE = 150  # Record per chunk
-SIGMA_THRESHOLD = 4.0  # Soglia 3-sigma
+CHUNK_SIZE = 200  # Record per chunk
+SIGMA_THRESHOLD = 3.5  # Soglia 3.5-sigma
 
 
 def load_model(spark):
@@ -315,7 +315,8 @@ def main():
         StructField("sensor_id", StringType(), True),
         StructField("timestamp", StringType(), True),
         StructField("temp", DoubleType(), True),
-        StructField("source", StringType(), True)
+        StructField("source", StringType(), True),
+        StructField("is_calibration", StringType(), True)  # Campo per identificare dati di calibrazione
     ])
     
     try:
@@ -327,6 +328,14 @@ def main():
             print("No data to process")
             spark.stop()
             return
+        
+        # Conta dati di calibrazione vs dati normali
+        calibration_count = df.filter(col("is_calibration") == "true").count()
+        normal_count = total_count - calibration_count
+        if calibration_count > 0:
+            print(f"   ⚠️ Calibration data: {calibration_count} records (will be excluded from OHLC)")
+            print(f"   📊 Normal data: {normal_count} records (will be used for OHLC)")
+        
     except Exception as e:
         print(f"Error loading data: {e}")
         spark.stop()
@@ -360,7 +369,8 @@ def main():
     # Statistiche globali
     total_clean = 0
     total_discarded = 0
-    all_clean_records = []
+    all_clean_records = []  # Per archiviazione (tutti i dati puliti)
+    all_ohlc_records = []   # Per OHLC (solo dati NON di calibrazione)
     
     # Processa ogni sensore
     for sensor_id in sorted(chunks_by_sensor.keys()):
@@ -382,7 +392,12 @@ def main():
             sensor_discarded += discarded
             all_clean_records.extend(clean_chunk)
             
-            # Aggiorna modello con i dati puliti
+            # Aggiungi a OHLC solo i record NON di calibrazione
+            for r in clean_chunk:
+                if not r.get("is_calibration"):
+                    all_ohlc_records.append(r)
+            
+            # Aggiorna modello con i dati puliti (inclusi dati di calibrazione)
             if clean_chunk:
                 clean_values = [r["temp"] for r in clean_chunk]
                 model = update_model_incremental(model, sensor_id, clean_values)
@@ -413,24 +428,38 @@ def main():
     # 5. CALCOLO INDICATORI TECNICI (OHLC, RSI, Bollinger)
     # ==============================================================================
     
-    if not all_clean_records:
-        print("No clean data for technical indicators")
+    # Usa all_ohlc_records (esclusi dati di calibrazione) per le metriche giornaliere
+    if not all_ohlc_records:
+        print("⚠️ No non-calibration data for OHLC calculation")
+        # Archivia comunque i dati puliti
+        if all_clean_records:
+            print(f"   (But {len(all_clean_records)} calibration records will be archived)")
         clear_incoming_files(spark)
         spark.stop()
         return
     
+    print(f"\n📊 Using {len(all_ohlc_records)} records for OHLC (excluding {len(all_clean_records) - len(all_ohlc_records)} calibration records)")
+    
     # Riconverti in DataFrame per calcoli Spark
     # Estrai solo i campi necessari per evitare problemi di inferenza schema
-    clean_records_filtered = [
+    # Schema senza is_calibration per OHLC
+    ohlc_schema = StructType([
+        StructField("sensor_id", StringType(), True),
+        StructField("timestamp", StringType(), True),
+        StructField("temp", DoubleType(), True),
+        StructField("source", StringType(), True)
+    ])
+    
+    ohlc_records_filtered = [
         {
             "sensor_id": r.get("sensor_id"),
             "timestamp": r.get("timestamp"),
             "temp": float(r.get("temp")) if r.get("temp") is not None else None,
             "source": r.get("source")
         }
-        for r in all_clean_records
+        for r in all_ohlc_records
     ]
-    df_clean = spark.createDataFrame(clean_records_filtered, schema=schema)
+    df_clean = spark.createDataFrame(ohlc_records_filtered, schema=ohlc_schema)
     df_clean = df_clean.withColumn("ts_long", unix_timestamp(col("timestamp")))
     
     # Finestre per indicatori
@@ -660,16 +689,31 @@ def main():
     except Exception as e:
         print(f"⚠️ Could not read existing stats: {e}")
 
-    # Calcola nuovi totali (INCREMENTALI)
-    # total_clean: somma dei dati puliti di questo batch + precedenti
-    # total_discarded: somma dei dati scartati di questo batch + precedenti
-    new_clean_total = current_stats["total_clean"] + total_clean
+    # Calcola nuovi totali
+    # total_clean: viene letto dai count OHLC (già cumulativi dopo il merge)
+    # total_discarded: somma incrementale dei dati scartati
+    
+    # Leggi il count totale dal result OHLC (già cumulativo)
+    try:
+        ohlc_total_count = sum(row["count"] for row in result.collect())
+    except:
+        ohlc_total_count = current_stats["total_clean"]
+    
+    # I discarded vengono sommati incrementalmente
     new_discarded_total = current_stats["total_discarded"] + total_discarded
     
+    # Debug: mostra i valori che stiamo usando
+    calibration_count = len(all_clean_records) - len(all_ohlc_records)
+    print(f"\n📊 Stats calculation:")
+    print(f"   Previous: clean={current_stats['total_clean']}, discarded={current_stats['total_discarded']}")
+    print(f"   OHLC total count (cumulative): {ohlc_total_count}")
+    print(f"   This batch filtered: {total_discarded}, calibration: {calibration_count} (excluded)")
+    print(f"   New totals: clean={ohlc_total_count}, discarded={new_discarded_total}")
+    
     final_stats = {
-        "total_clean": new_clean_total,
+        "total_clean": ohlc_total_count,  # Usa il count OHLC cumulativo
         "total_discarded": new_discarded_total,
-        "total_processed": new_clean_total + new_discarded_total
+        "total_processed": ohlc_total_count + new_discarded_total
     }
     
     try:

@@ -190,7 +190,7 @@ def run_coinbase():
                     })
             except Exception:
                 pass
-        time.sleep(5)
+        time.sleep(2)
 
 
 def run_coingecko():
@@ -209,7 +209,7 @@ def run_coingecko():
                     })
         except Exception:
             pass
-        time.sleep(20)
+        time.sleep(3)
 
 
 def process_queue():

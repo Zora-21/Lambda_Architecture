@@ -23,14 +23,15 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
 KAFKA_TOPIC = os.getenv('KAFKA_TOPIC', 'crypto-prices')
 KAFKA_GROUP_ID = os.getenv('KAFKA_BATCH_GROUP_ID', 'batch-layer-group')
 HDFS_HOST = os.getenv('HDFS_HOST', 'namenode')
-BATCH_SIZE = int(os.getenv('BATCH_SIZE', '1500'))
-BATCH_FLUSH_INTERVAL = int(os.getenv('BATCH_FLUSH_INTERVAL', '60'))
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', '5000'))
+BATCH_FLUSH_INTERVAL = int(os.getenv('BATCH_FLUSH_INTERVAL', '180'))
 LOCAL_BUFFER_PATH = '/buffer/hdfs_buffer.jsonl'
 
 # Global state
 message_buffer = []
 last_flush_time = time.time()
 total_written = 0
+is_in_calibration = True  # Inizia in calibrazione, diventa False quando il modello esiste
 
 
 def write_to_hdfs(data_lines):
@@ -154,7 +155,7 @@ def wait_for_model():
 
 
 def main():
-    global message_buffer, last_flush_time
+    global message_buffer, last_flush_time, is_in_calibration
     
     logger.info("Batch Layer Consumer starting...")
     logger.info(f"Config: BATCH_SIZE={BATCH_SIZE}, FLUSH_INTERVAL={BATCH_FLUSH_INTERVAL}s")
@@ -192,10 +193,24 @@ def main():
     
     # Main processing loop
     last_flush_time = time.time()
+    last_model_check = 0
+    MODEL_CHECK_INTERVAL = 30  # Controlla ogni 30 secondi se il modello esiste
     
     for message in consumer:
         try:
             data = message.value
+            
+            # Controlla periodicamente se il modello esiste (per uscire dalla calibrazione)
+            if is_in_calibration and (time.time() - last_model_check) >= MODEL_CHECK_INTERVAL:
+                last_model_check = time.time()
+                if check_model_exists():
+                    is_in_calibration = False
+                    logger.info("✅ Model detected! Exiting calibration mode - future data will be used for OHLC")
+            
+            # Marca i dati come calibrazione se siamo ancora in fase di calibrazione
+            if is_in_calibration:
+                data['is_calibration'] = True
+            
             message_buffer.append(data)
             
             # Check flush conditions
@@ -204,7 +219,8 @@ def main():
             
             if buffer_full or time_exceeded:
                 reason = "size" if buffer_full else "time"
-                logger.info(f"Flushing buffer ({reason}): {len(message_buffer)} records")
+                cal_info = " [CALIBRATION]" if is_in_calibration else ""
+                logger.info(f"Flushing buffer ({reason}): {len(message_buffer)} records{cal_info}")
                 flush_buffer()
                 
         except Exception as e:
