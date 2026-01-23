@@ -145,10 +145,8 @@ Le principali variabili sono configurate nel `docker-compose.yml`:
 
 | Variabile | Default | Descrizione |
 |-----------|---------|-------------|
-| `BATCH_SIZE` | 1000 | Messaggi per batch HDFS |
-| `BATCH_FLUSH_INTERVAL` | 120s | Intervallo flush HDFS |
-| `MODEL_TRAINER_INTERVAL` | 300s | Intervallo training modello |
-| `BATCH_PROCESSOR_INTERVAL` | 150s | Intervallo elaborazione batch |
+| `BATCH_SIZE` | 5000 | Messaggi per batch HDFS |
+| `BATCH_PROCESSOR_INTERVAL` | 180s | Intervallo elaborazione batch |
 
 ## 📝 License
 
