@@ -7,7 +7,7 @@ storici e salva il modello su HDFS.
 """
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, avg, stddev, count
+from pyspark.sql.functions import col, avg, stddev, count, min as spark_min, max as spark_max
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 import json
 from datetime import datetime, timedelta
@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 # Configuration
 HDFS_NAMENODE = "hdfs://namenode:9000"
 MODEL_PATH = "/models/model.json"
+REQUIRED_DATA_MINUTES = 5  # Minuti richiesti di copertura dati
 
 
 def main():
@@ -37,12 +38,13 @@ def main():
         StructField("source", StringType(), True)
     ])
     
-    # Time window: last 60 minutes for better variance capture
-    window_minutes = 60
+    # Time window: last 5 minutes
+    window_minutes = 5
     cutoff_time = datetime.now() - timedelta(minutes=window_minutes)
     cutoff_str = cutoff_time.strftime("%Y-%m-%dT%H:%M:%S")
     
     print(f"Training window: last {window_minutes} minutes (since {cutoff_str})")
+    print(f"Required data coverage: {REQUIRED_DATA_MINUTES} minutes")
     
     # Build list of data sources (only recent data matters)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -80,6 +82,47 @@ def main():
         combined_df = combined_df.union(df)
     
     print(f"\nTotal records for training (last {window_minutes}min): {total_records}")
+    
+    # ========== VERIFICA COPERTURA TEMPORALE ==========
+    # Calcola il range temporale effettivo dei dati
+    time_range = combined_df.agg(
+        spark_min("timestamp").alias("min_ts"),
+        spark_max("timestamp").alias("max_ts")
+    ).collect()[0]
+    
+    min_ts_str = time_range["min_ts"]
+    max_ts_str = time_range["max_ts"]
+    
+    if min_ts_str and max_ts_str:
+        try:
+            # Parse timestamps
+            min_ts = datetime.strptime(min_ts_str[:19], "%Y-%m-%dT%H:%M:%S")
+            max_ts = datetime.strptime(max_ts_str[:19], "%Y-%m-%dT%H:%M:%S")
+            
+            data_range_minutes = (max_ts - min_ts).total_seconds() / 60.0
+            
+            print(f"\n📊 Data Time Range Analysis:")
+            print(f"   Oldest record: {min_ts_str}")
+            print(f"   Newest record: {max_ts_str}")
+            print(f"   Coverage: {data_range_minutes:.2f} minutes")
+            print(f"   Required: {REQUIRED_DATA_MINUTES} minutes")
+            
+            if data_range_minutes < REQUIRED_DATA_MINUTES:
+                print(f"\n⚠️  INSUFFICIENT DATA COVERAGE!")
+                print(f"   Data covers only {data_range_minutes:.2f} min, need at least {REQUIRED_DATA_MINUTES} min")
+                print(f"   Aborting model training - waiting for more data...")
+                spark.stop()
+                return
+            else:
+                print(f"   ✅ Sufficient data coverage confirmed")
+                
+        except Exception as e:
+            print(f"⚠️  Could not parse timestamps for validation: {e}")
+            print("   Proceeding with training anyway...")
+    else:
+        print("⚠️  Could not determine time range - proceeding with training...")
+    
+    # ===================================================
     
     # Calculate statistics per sensor
     stats = combined_df.groupBy("sensor_id").agg(
